@@ -226,3 +226,31 @@ dormant machinery that nothing in the toolkit can ever invoke (the
 orchestrator runtime stays in the origin project). Dead code in a public
 v1.0.0 is a maintenance and review-noise liability; deleting it keeps the
 radical-simplicity contract the toolkit's own judges enforce.
+
+## D-0010 — Integrity-token suppression in the secret scanner
+
+- Date: 2026-09-07
+- Status: Accepted
+
+### Decision
+
+`secret_scan.py` does NOT skip npm/yarn lockfiles by file name. Instead,
+`scan_text` neutralizes the exact integrity token shape
+(`sha512-<base64>==`, i.e. an algorithm-prefixed base64 digest) before
+the `high-entropy-base64` heuristic runs; every other detector scans the
+raw text untouched. The pre-existing whole-file skips (`.env.example`,
+`uv.lock`) are unchanged.
+
+### Rationale
+
+Lockfile integrity fields embed base64 content hashes of PUBLIC package
+tarballs. They are content addresses, not credentials, but their length
+and entropy reliably trip the `high-entropy-base64` heuristic — observed
+on the first npm consumer's PR, where every `sha512-` integrity string in
+`package-lock.json` was reported as a finding. An earlier draft of this
+decision skipped `package-lock.json`/`yarn.lock` by file name; review
+rejected that as a scanner bypass (real credentials smuggled into a
+lockfile-named file — e.g. tokens in authenticated registry "resolved"
+URLs — would have evaded every detector). The token-shape carve-out only
+affects the one heuristic the digests actually false-positive on, so a
+lockfile carrying a genuine secret is still flagged.

@@ -21,6 +21,16 @@ PATTERNS = {
     "high-entropy-base64": re.compile(r"(?:[A-Za-z0-9+/]{40,}(?:={0,2})\n?){2,}"),
 }
 
+# npm/yarn lockfiles record integrity digests of PUBLIC package tarballs
+# as algorithm-prefixed base64 runs (sha512-<86 chars>==), which reliably
+# trip the high-entropy-base64 heuristic. Neutralize this exact token
+# shape before the heuristic runs instead of skipping lockfiles by file
+# name: a filename skip would let real credentials smuggled into a
+# lockfile (e.g. tokens in authenticated "resolved" URLs) evade ALL
+# detectors, whereas a token-shape carve-out only affects the one
+# heuristic the digests actually false-positive on.
+INTEGRITY_TOKEN = re.compile(r"sha(?:512|384|256)[/-][A-Za-z0-9+/]{40,}={0,2}")
+
 
 def is_binary(path: Path) -> bool:
     try:
@@ -33,13 +43,22 @@ def is_binary(path: Path) -> bool:
 
 def scan_text(text: str, filename: str):
     findings = []
+    # Only the high-entropy-base64 heuristic sees the neutralized text;
+    # every other pattern scans the raw text untouched.
+    b64_text = INTEGRITY_TOKEN.sub("", text)
     for name, pattern in PATTERNS.items():
-        for match in pattern.finditer(text):
+        haystack = b64_text if name == "high-entropy-base64" else text
+        for match in pattern.finditer(haystack):
             findings.append((filename, name, match.group().split("\n", 1)[0][:80]))
     return findings
 
 
 def scan_file(path: Path) -> list:
+    # .env.example carries placeholder values and uv.lock carries hex
+    # (non-base64) hashes; both pre-existing skips stay file-name based.
+    # npm/yarn lockfiles are NOT skipped: their base64 integrity digests
+    # are neutralized token-shape-wise inside scan_text, so genuine
+    # secrets in a lockfile remain detectable.
     if path.name in (".env.example", "uv.lock"):
         return []
     if is_binary(path):
