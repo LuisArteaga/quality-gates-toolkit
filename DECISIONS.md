@@ -155,8 +155,9 @@ None.
 
 ### Decision
 
-Workflows check out the Python implementation with `toolkit-ref` (default
-`v1`, a stable tag — never `main`). The toolkit's own CI passes its PR head
+Workflows check out the Python implementation with `toolkit-ref` (default:
+the concrete release tag, e.g. `v1.0.0` — never a branch or `main`). The
+toolkit's own CI passes its PR head
 SHA instead, dogfooding the PR's implementation via relative `./` references
 for the workflow definitions.
 
@@ -169,7 +170,12 @@ published release.
 
 ### Amendments
 
-None.
+- 2026-09-06: The default `toolkit-ref` is the concrete release tag
+  (`v1.0.0`), not a floating major prefix — GitHub resolves no `v1` alias,
+  so a default naming an nonexistent ref would break default-consuming
+  callers. Callers pin `uses:` to an immutable release tag; the tag's own
+  workflow file carries the matching default, keeping workflow and
+  implementation checkout in lockstep per release.
 
 ## D-0008 — Bootstrap carve-out from the changed-line coverage gate
 

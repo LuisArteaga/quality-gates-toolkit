@@ -107,8 +107,23 @@ def test_composite_ships_neutral_public_defaults():
     assert inputs["lint-paths"]["default"] == "."
     assert inputs["cov-paths"]["default"] == "."
     assert inputs["extra-pip-packages"]["default"] == "none"
-    assert inputs["toolkit-ref"]["default"] == "v1"
+    assert inputs["toolkit-ref"]["default"] == "v1.0.0"
     assert inputs["config-path"]["default"] == "config/factory.json"
+
+
+def test_every_toolkit_ref_input_defaults_to_the_release_tag():
+    # D-0007 (amended): the default is the concrete release tag — GitHub
+    # resolves no floating major alias, so a default naming a nonexistent
+    # ref would break default-consuming callers.
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        wf = _load(path.name)
+        inputs = _triggers(wf).get("workflow_call") or {}
+        inputs = inputs.get("inputs") or {}
+        if "toolkit-ref" not in inputs:
+            continue
+        assert inputs["toolkit-ref"].get("default") == "v1.0.0", (
+            f"{path.name}: toolkit-ref must default to the concrete release tag"
+        )
 
 
 def test_batch_budget_input_is_forwarded_to_the_judge_workflow():
