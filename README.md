@@ -55,6 +55,60 @@ permissions:
 A nested reusable workflow can narrow but never elevate the caller's token
 scope.
 
+## Secrets
+
+The workflows declare two secret *inputs* (`openrouter-api-key`,
+`judge-token`). The repo secret names below are the convention this
+repository uses — the input names are the contract. Deterministic-only
+usage (`enable-llm-review: false`, the default) reads no secrets at all.
+
+### `OPENROUTER_API_KEY`
+
+- **Required when** the LLM review is enabled.
+- **Why:** the judges call OpenRouter to review the PR diff. The value is
+  forwarded to `llm-pr-review.yml` as its `openrouter-api-key` input.
+- **Without it:** the review job fails fast with an explicit error once
+  enabled; deterministic gates are unaffected.
+- Create the key in the OpenRouter dashboard (Keys) and consider a per-key
+  spend limit.
+
+### `JUDGE_GH_TOKEN`
+
+- **Optional.** When omitted, the review falls back to the caller's
+  `github.token` and reviews are authored by `github-actions[bot]` — fine
+  for plain consumers.
+- **When to pass a user PAT:**
+  - *Trusted-identity automerge:* if your pipeline verifies that the review
+    author equals a known judge identity, a bot-authored review does not
+    match. Pass a PAT whose account is the trusted judge identity.
+  - *Self-review guard:* the `github.token` fallback is an installation
+    token (HTTP 403 on `GET /user`), so the guard that skips submitting a
+    review on the judge's own PR cannot run; GitHub still rejects such
+    reviews server-side. A user PAT makes the guard functional.
+- **Required scopes:**
+  - Classic PAT: `repo` for private repositories; `public_repo` suffices
+    for public ones.
+  - Fine-grained PAT: access to the consumer repository with
+    **Pull requests: Read and write** (plus the mandatory metadata read).
+    No contents access needed — the diff is computed from the local git
+    checkout; the token is only used for the review API calls.
+- Forwarded as `judge-token`; the workflow falls back to `github.token`
+  automatically when it is declared but unset.
+
+### Fork PRs
+
+Fork PRs cannot access repository secrets, so the LLM review can never
+authenticate for forked contributions. Enable it conditionally for same-repo
+PRs only — `ci.yml` shows the pattern:
+
+```yaml
+enable-llm-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+```
+
+`pull_request_target` is deliberately not offered as a workaround: it would
+check out and run untrusted PR code with secrets attached (see Known
+limitations).
+
 ## Picking individual gates
 
 Each micro-workflow is independently callable, e.g.:
