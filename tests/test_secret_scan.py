@@ -35,9 +35,9 @@ PEM_RSA_FAKE = "-----BEGIN " + "RSA PRIVATE KEY-----"
 PEM_OPENSSH_FAKE = "-----BEGIN " + "OPENSSH " + "PRIVATE KEY-----"
 LEAK_LINE = f't = "{PAT_FAKE}"\n'
 
-# Lockfile-style integrity body: sha512-integrity shape — an 86-char
-# base64 run plus "==" padding per line, the exact shape npm/yarn
-# lockfiles carry for public package tarballs. A single 80+ char run
+# Lockfile-style integrity bodies: the exact sha512 token shapes npm
+# (JSON) and yarn v1 (YAML) lockfiles carry for public package tarballs —
+# an 86-char base64 run plus "==" padding per line. A single 80+ char run
 # satisfies the high-entropy-base64 heuristic (the {2,} repetition
 # splits one long run into two adjacent 40+ segments), which is how the
 # real false positives were produced. Assembled at runtime so this
@@ -46,9 +46,17 @@ LEAK_LINE = f't = "{PAT_FAKE}"\n'
 _B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 
-def _lockfile_integrity_body() -> str:
-    run = "".join(_B64_ALPHABET[(i * 7) % 64] for i in range(86))
-    line = f'"integrity": "sha512-{run}=="\n'
+def _b64_run() -> str:
+    return "".join(_B64_ALPHABET[(i * 7) % 64] for i in range(86))
+
+
+def _npm_integrity_body() -> str:
+    line = f'"integrity": "sha512-{_b64_run()}=="\n'
+    return line + line
+
+
+def _yarn_integrity_body() -> str:
+    line = f"integrity sha512-{_b64_run()}==\n"
     return line + line
 
 
@@ -125,34 +133,6 @@ class TestScanFile(unittest.TestCase):
             path.write_text(f"{OR_KEY_FAKE}\n", encoding="utf-8")
             self.assertEqual(secret_scan.scan_file(path), [])
 
-    def test_package_lock_json_is_skipped(self):
-        # npm lockfiles carry sha512 base64 integrity hashes of public
-        # package tarballs — content addresses, not secrets. The content
-        # below provably trips the high-entropy-base64 heuristic in a
-        # non-skipped file, so the empty result for the lockfile name
-        # comes from the skip, not from the content being too weak to
-        # match.
-        text = _lockfile_integrity_body()
-        self.assertEqual(
-            [f[1] for f in secret_scan.scan_text(text, "b.txt")],
-            ["high-entropy-base64", "high-entropy-base64"],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "package-lock.json"
-            path.write_text(text, encoding="utf-8")
-            self.assertEqual(secret_scan.scan_file(path), [])
-
-    def test_yarn_lock_is_skipped(self):
-        text = _lockfile_integrity_body()
-        self.assertEqual(
-            [f[1] for f in secret_scan.scan_text(text, "b.txt")],
-            ["high-entropy-base64", "high-entropy-base64"],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "yarn.lock"
-            path.write_text(text, encoding="utf-8")
-            self.assertEqual(secret_scan.scan_file(path), [])
-
     def test_real_secrets_still_scanned_outside_lockfiles(self):
         # The lockfile skip must not leak into normal source files.
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,6 +155,52 @@ class TestScanFile(unittest.TestCase):
             findings = secret_scan.scan_file(path)
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0][1], "github-pat")
+
+
+class TestIntegrityHashSuppression(unittest.TestCase):
+    """The npm/yarn integrity false positive is fixed by neutralizing the
+    integrity token SHAPE inside the high-entropy-base64 heuristic — not
+    by skipping lockfile file names, which would let real credentials in
+    a lockfile-named file evade every detector."""
+
+    def test_fixture_would_trip_heuristic_without_suppression(self):
+        # Guard against a vacuously-passing suite: the raw fixture text
+        # provably matches the heuristic pattern absent suppression.
+        for body in (_npm_integrity_body(), _yarn_integrity_body()):
+            matches = list(secret_scan.PATTERNS["high-entropy-base64"].finditer(body))
+            self.assertEqual(len(matches), 2)
+
+    def test_scan_text_suppresses_npm_integrity_tokens(self):
+        self.assertEqual(secret_scan.scan_text(_npm_integrity_body(), "b.txt"), [])
+
+    def test_scan_text_suppresses_yarn_integrity_tokens(self):
+        self.assertEqual(secret_scan.scan_text(_yarn_integrity_body(), "b.txt"), [])
+
+    def test_package_lock_json_with_integrity_hashes_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package-lock.json"
+            path.write_text(_npm_integrity_body(), encoding="utf-8")
+            self.assertEqual(secret_scan.scan_file(path), [])
+
+    def test_yarn_lock_with_integrity_hashes_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "yarn.lock"
+            path.write_text(_yarn_integrity_body(), encoding="utf-8")
+            self.assertEqual(secret_scan.scan_file(path), [])
+
+    def test_real_secret_in_lockfile_is_still_detected(self):
+        # Anti-bypass: a genuine credential smuggled into a lockfile-named
+        # file (here: a PAT in an authenticated registry "resolved" URL)
+        # must still be flagged even though the integrity hashes next to
+        # it are suppressed.
+        text = _npm_integrity_body() + (
+            f'"resolved": "https://ci:{PAT_FAKE}@registry.example/pkg.tgz"\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package-lock.json"
+            path.write_text(text, encoding="utf-8")
+            findings = secret_scan.scan_file(path)
+        self.assertEqual([f[1] for f in findings], ["github-pat"])
 
 
 class TestCliInGitRepo(TempGitRepoTestCase):
