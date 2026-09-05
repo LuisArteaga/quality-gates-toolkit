@@ -35,6 +35,22 @@ PEM_RSA_FAKE = "-----BEGIN " + "RSA PRIVATE KEY-----"
 PEM_OPENSSH_FAKE = "-----BEGIN " + "OPENSSH " + "PRIVATE KEY-----"
 LEAK_LINE = f't = "{PAT_FAKE}"\n'
 
+# Lockfile-style integrity body: sha512-integrity shape — an 86-char
+# base64 run plus "==" padding per line, the exact shape npm/yarn
+# lockfiles carry for public package tarballs. A single 80+ char run
+# satisfies the high-entropy-base64 heuristic (the {2,} repetition
+# splits one long run into two adjacent 40+ segments), which is how the
+# real false positives were produced. Assembled at runtime so this
+# file's own source text never contains a long base64 run that the
+# toolkit's self-scan would flag.
+_B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+def _LOCKFILE_INTEGRITY_BODY() -> str:
+    run = "".join(_B64_ALPHABET[(i * 7) % 64] for i in range(86))
+    line = f'"integrity": "sha512-{run}=="\n'
+    return line + line
+
 
 class TestIsBinary(unittest.TestCase):
     def test_text_file_is_not_binary(self):
@@ -111,18 +127,30 @@ class TestScanFile(unittest.TestCase):
 
     def test_package_lock_json_is_skipped(self):
         # npm lockfiles carry sha512 base64 integrity hashes of public
-        # package tarballs — content addresses, not secrets.
+        # package tarballs — content addresses, not secrets. The content
+        # below provably trips the high-entropy-base64 heuristic in a
+        # non-skipped file, so the empty result for the lockfile name
+        # comes from the skip, not from the content being too weak to
+        # match.
+        text = _LOCKFILE_INTEGRITY_BODY()
+        self.assertEqual(
+            [f[1] for f in secret_scan.scan_text(text, "b.txt")],
+            ["high-entropy-base64", "high-entropy-base64"],
+        )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "package-lock.json"
-            b64 = "QUJD" * 10 + "QUJD"
-            path.write_text(f'"integrity": "sha512-{b64}"\n', encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
             self.assertEqual(secret_scan.scan_file(path), [])
 
     def test_yarn_lock_is_skipped(self):
+        text = _LOCKFILE_INTEGRITY_BODY()
+        self.assertEqual(
+            [f[1] for f in secret_scan.scan_text(text, "b.txt")],
+            ["high-entropy-base64", "high-entropy-base64"],
+        )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "yarn.lock"
-            b64 = "QUJD" * 10 + "QUJD"
-            path.write_text(f'integrity "sha512-{b64}"\n', encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
             self.assertEqual(secret_scan.scan_file(path), [])
 
     def test_real_secrets_still_scanned_outside_lockfiles(self):
