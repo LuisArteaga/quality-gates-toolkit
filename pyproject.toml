@@ -19,6 +19,9 @@ dev = [
     "mypy",
     "pyyaml",
     "tree-sitter-language-pack",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
 ]
 
 [tool.ruff]

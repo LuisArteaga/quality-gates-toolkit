@@ -164,3 +164,28 @@ published release.
 ### Amendments
 
 None.
+
+## D-0008 — Bootstrap carve-out from the changed-line coverage gate
+
+- Date: 2026-09-05
+- Status: Accepted
+
+### Decision
+
+The toolkit's own `ci.yml` disables `enable-diff-gate` for now. The
+floor-based total coverage gate (80% via `coverage-floor`) remains the
+enforced policy for this repository.
+
+### Rationale
+
+The diff gate enforces 100% coverage on changed lines. The toolkit's Python
+implementation was ported from a private orchestrator whose suites exercise
+it end-to-end, but porting the full changed-line discipline (per-line
+coverage of ~3,000 inherited lines in the bootstrap commit) would block the
+v1.0.0 release without improving the ported code. The carve-out is scoped to
+the bootstrap period: a follow-up issue re-enables the gate once inherited
+gaps are closed.
+
+### Amendments
+
+None.

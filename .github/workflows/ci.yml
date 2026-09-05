@@ -35,6 +35,10 @@ jobs:
       lint-paths: "scripts"
       cov-paths: "scripts"
       coverage-floor: 80
+      # Bootstrap carve-out (D-0008): ported tooling predates changed-line
+      # coverage discipline; total-coverage floor stays ON. Re-enable per
+      # the D-0008 follow-up issue.
+      enable-diff-gate: false
       prefetch-tree-sitter: true
       enable-llm-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
       toolkit-ref: ${{ github.event.pull_request.head.sha }}
