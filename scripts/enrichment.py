@@ -24,7 +24,10 @@ import logging
 import re
 import os
 
-from tree_sitter_language_pack import get_parser
+try:
+    from tree_sitter_language_pack import get_parser
+except ImportError:  # optional dependency; enrichment degrades gracefully
+    get_parser = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +202,19 @@ def enrich_diff_with_function_context(diff: str, workspace_dir: str) -> str:
         The enriched string: ``raw_diff + "\\n\\n=== ENCLOSING FUNCTION CONTEXT ===\\n" +
         context_blocks``. If no hunks are found or enrichment produces no
         context, the original diff is returned unchanged.
+
+    Graceful degradation: when ``tree_sitter_language_pack`` is not installed
+    (it is an optional dev extra, not a runtime dependency), enrichment is
+    skipped and the raw diff is returned unchanged — this is the documented
+    default behavior of the reusable workflows, which never install the pack.
     """
+    if get_parser is None:
+        logger.warning(
+            "tree_sitter_language_pack not installed; skipping enclosing-"
+            "function enrichment (raw diff passed through unchanged)."
+        )
+        return diff
+
     hunks = _parse_hunks(diff)
     if not hunks:
         return diff

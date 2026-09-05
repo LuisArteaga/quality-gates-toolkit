@@ -2446,5 +2446,56 @@ class BatchBudgetTests(unittest.TestCase):
             self.assertIn("Invalid REVIEW_BATCH_BUDGET_CHARS", captured_out.getvalue())
 
 
+class WorkspaceResolutionTests(unittest.TestCase):
+    """resolve_workspace_dir: checkout layout precedence for review context."""
+
+    def setUp(self):
+        self._saved = {
+            name: os.environ.get(name)
+            for name in ("REVIEW_WORKSPACE_DIR", "GITHUB_WORKSPACE")
+        }
+        os.environ.pop("REVIEW_WORKSPACE_DIR", None)
+        os.environ.pop("GITHUB_WORKSPACE", None)
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_explicit_override_wins(self):
+        os.environ["REVIEW_WORKSPACE_DIR"] = "/custom/checkout"
+        os.environ["GITHUB_WORKSPACE"] = "/runner/workspace"
+        self.assertEqual(review.resolve_workspace_dir(), "/custom/checkout")
+
+    def test_github_workspace_repo_layout_preferred(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root) / "repo"
+            repo.mkdir()
+            os.environ["GITHUB_WORKSPACE"] = root
+            self.assertEqual(review.resolve_workspace_dir(), str(repo))
+
+    def test_root_checkout_falls_back_to_workspace(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.environ["GITHUB_WORKSPACE"] = root
+            self.assertEqual(review.resolve_workspace_dir(), root)
+
+    def test_cwd_fallback_without_github_env(self):
+        self.assertEqual(review.resolve_workspace_dir(), os.getcwd())
+
+
+class EnrichmentDegradeTests(unittest.TestCase):
+    """_enrich_chunk must degrade, never crash the judge run."""
+
+    def test_enrichment_failure_passes_raw_chunk_through(self):
+        with patch(
+            "enrichment.enrich_diff_with_function_context",
+            side_effect=RuntimeError("parser exploded"),
+        ):
+            out = review._enrich_chunk("diff --git a/x.py b/x.py\n", "/tmp")
+        self.assertEqual(out, "diff --git a/x.py b/x.py\n")
+
+
 if __name__ == "__main__":
     unittest.main()

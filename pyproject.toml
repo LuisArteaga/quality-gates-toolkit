@@ -8,6 +8,19 @@ license = "MIT"
 authors = [{ name = "Luis Arteaga" }]
 dependencies = []
 
+[project.scripts]
+# Console script invoked by the public pre-commit hook (.pre-commit-hooks.yaml)
+# and usable standalone: `secret-scan` scans the current repository.
+secret-scan = "scripts.secret_scan:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# The single shipped package: scripts/ (each gate is a module in it).
+packages = ["scripts"]
+
 [project.optional-dependencies]
 # Runtime dependency of scripts/enrichment.py (enclosing-function-context
 # enrichment). review.py imports it lazily and degrades gracefully when the

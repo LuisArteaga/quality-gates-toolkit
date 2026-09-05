@@ -159,7 +159,7 @@ if not HAS_OTEL:
 def get_tracer():
     """Returns the central tracer instance, or a dummy tracer if OTel is missing."""
     if HAS_OTEL:
-        return trace.get_tracer("agentic-developer-core-review")
+        return trace.get_tracer("quality-gates-toolkit-review")
     else:
         return DummyTracer()
 
@@ -320,8 +320,8 @@ def init_telemetry(in_memory_exporter=None):
             current_provider.add_span_processor(SimpleSpanProcessor(in_memory_exporter))
         return
 
-    service_name = os.getenv("OTEL_SERVICE_NAME", "my-agent-service")
-    project_name = os.getenv("SMITHDB_PROJECT_NAME", "default")
+    service_name = os.getenv("OTEL_SERVICE_NAME", "quality-gates-review")
+    project_name = os.getenv("REVIEW_OTEL_PROJECT_NAME", "default")
 
     resource = Resource.create(
         {
@@ -357,7 +357,7 @@ def init_telemetry(in_memory_exporter=None):
             configure_otlp_endpoint()
             endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
             headers = {}
-            api_key = os.getenv("SMITHDB_API_KEY", "")
+            api_key = os.getenv("REVIEW_OTEL_API_KEY", "")
             if api_key:
                 headers["x-api-key"] = api_key
 

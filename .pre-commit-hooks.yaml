@@ -1,0 +1,12 @@
+# Public pre-commit hook interface — this file makes the repository usable
+# as a remote pre-commit hook source (see README "Using as a pre-commit
+# hook"). Requires `language: python`, so the toolkit is pip-installable:
+# pyproject.toml declares the build backend and the `secret-scan` console
+# script that pre-commit invokes inside its isolated hook environment.
+- id: secret-scan
+  name: quality-gates-toolkit secret scan
+  description: Best-effort regex scan for committed secrets (stdlib only).
+  entry: secret-scan
+  language: python
+  pass_filenames: false
+  always_run: true

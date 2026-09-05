@@ -355,5 +355,33 @@ class TestEnrichDiffWithFunctionContext(unittest.TestCase):
         self.assertNotIn("=== ENCLOSING FUNCTION CONTEXT ===", enriched)
 
 
+class TestGracefulDegradation(unittest.TestCase):
+    """The tree-sitter pack is an optional dev extra — absence must degrade.
+
+    Contract the reusable workflows rely on: they never install the pack
+    (only the opt-in prefetch step does), so enrichment must pass the raw
+    diff through unchanged instead of crashing the judge run with an
+    ImportError or parser failure.
+    """
+
+    def test_missing_pack_returns_raw_diff(self):
+        """get_parser is None (pack absent) → raw diff passes through."""
+        import unittest.mock
+
+        import enrichment
+
+        diff = (
+            "diff --git a/app.py b/app.py\n"
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -1,2 +1,2 @@\n"
+        )
+        with tempfile.TemporaryDirectory() as workspace:
+            with unittest.mock.patch.object(enrichment, "get_parser", None):
+                enriched = enrich_diff_with_function_context(diff, workspace)
+        self.assertEqual(enriched, diff)
+        self.assertNotIn("=== ENCLOSING FUNCTION CONTEXT ===", enriched)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,12 +1,8 @@
-"""Secret redaction for Worker traces and telemetry span values.
+"""Best-effort secret redaction for text that leaves the review process.
 
-Defense-in-depth layer (ADR-0037, layer 4): even if a secret reaches a tool
-result or a telemetry attribute, it is scrubbed before being persisted to the
-``worker_trace_*.jsonl`` sidecar or exported to the OTLP endpoint. This is a
-best-effort scrub, not a guarantee — the structural controls (``run_command``
-allowlist + env stripping, ``is_safe_path``, ``fetch_url`` DNS pinning) are
-the primary defense; this layer ensures a residual secret is not durably
-exposed.
+Used on free-text surfaces of the opt-in telemetry path (span attribute
+values that may carry user-defined content). This is a best-effort scrub,
+not a guarantee.
 
 Two redaction passes:
 

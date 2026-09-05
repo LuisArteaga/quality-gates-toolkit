@@ -284,3 +284,37 @@ def test_micro_workflows_use_least_privilege_permissions():
     # Only the review workflow may write.
     llm_permissions = _load("llm-pr-review.yml")["permissions"]
     assert llm_permissions == {"contents": "read", "pull-requests": "write"}
+
+
+# ---------------------------------------------------------------------------
+# Public pre-commit hook interface (README "Using as a pre-commit hook")
+# ---------------------------------------------------------------------------
+
+
+def test_pre_commit_hooks_file_declares_secret_scan():
+    hooks_path = WORKFLOWS.parent.parent / ".pre-commit-hooks.yaml"
+    assert hooks_path.exists(), "remote hook consumers need .pre-commit-hooks.yaml"
+    with hooks_path.open() as f:
+        hooks = yaml.safe_load(f)
+    assert isinstance(hooks, list) and hooks, "must declare at least one hook"
+    hook = next((h for h in hooks if h.get("id") == "secret-scan"), None)
+    assert hook is not None, "hook id 'secret-scan' must exist (README quick start)"
+    assert hook.get("entry") == "secret-scan"
+    assert hook.get("language") == "python"
+    assert hook.get("pass_filenames") is False
+    assert hook.get("always_run") is True
+
+
+def test_pyproject_is_installable_and_exposes_secret_scan_script():
+    import tomllib
+
+    pyproject = WORKFLOWS.parent.parent / "pyproject.toml"
+    assert pyproject.exists()
+    with pyproject.open("rb") as f:
+        data = tomllib.load(f)
+    # `language: python` remote hooks are installed via pip — the package
+    # must be buildable.
+    assert data["build-system"]["build-backend"] == "setuptools.build_meta"
+    # The hook entry point must resolve to a real console script.
+    assert data["project"]["scripts"]["secret-scan"] == "scripts.secret_scan:main"
+    assert "scripts" in data["tool"]["setuptools"]["packages"]

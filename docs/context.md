@@ -17,10 +17,18 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
 - `telemetry.py` provides tracing for the review run: OpenTelemetry with
   no-op degradation when the SDK is absent, local JSONL span logging, and
   opt-in OTLP/Langfuse export driven purely by environment variables.
-- `redaction.py` scrubs secret-shaped values from span attributes and
-  exported model names; it is reachable whenever Langfuse export is
-  configured.
+  Span-log destination: `AGENT_LOG_PATH` if set, else `.agent_logs/` beside
+  the checkout, else `/workspace/.agent_logs` (container layouts), else
+  `/tmp/agent_logs`. Export knobs: `OTEL_SERVICE_NAME`,
+  `REVIEW_OTEL_PROJECT_NAME`, `REVIEW_OTEL_API_KEY`, `OTEL_EXPORTER_OTLP_*`.
+- `redaction.py` scrubs secret-shaped values (known token shapes plus
+  `KEY`/`TOKEN`/`SECRET`/`PASSWORD` assignment lines) from free-text span
+  attribute values; it is reachable whenever Langfuse export is configured.
+  Span values are only scrubbed at the attributes telemetry.py explicitly
+  sets — it is not a wholesale span-value filter.
 - `enrichment.py` adds enclosing-function context to Python diff chunks.
+  The `tree-sitter-language-pack` is an optional dev extra; when absent,
+  enrichment degrades gracefully and judges receive the raw diff.
 
 Orchestrator-runtime concerns (loop/phase span state machines, persistent
 telemetry state files, merge automation) are deliberately out of scope and

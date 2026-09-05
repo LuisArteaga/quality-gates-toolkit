@@ -38,18 +38,15 @@ def _warn(message: str) -> None:
     print(f"[WARN] {message}", file=sys.stderr)
 
 
-def load_factory_config(filepath: str | None = None) -> dict[str, Any]:
+def load_factory_config() -> dict[str, Any]:
     """Load and parse the consumer's factory.json.
 
     Returns an empty dict on missing or malformed files (never raises) so the
     resolver can degrade gracefully to DEFAULT_MODEL. No caching: review.py
-    resolves judge configs a handful of times per run.
+    resolves judge configs a handful of times per run. The file location is
+    resolved at call time from ``CONFIG_PATH_ENV``.
     """
-    path = (
-        filepath
-        if filepath is not None
-        else os.getenv(CONFIG_PATH_ENV, DEFAULT_CONFIG_PATH)
-    )
+    path = os.getenv(CONFIG_PATH_ENV, DEFAULT_CONFIG_PATH)
     if not os.path.exists(path):
         _warn(
             f"Judge configuration not found at '{path}'; falling back to "

@@ -380,7 +380,7 @@ def call_openrouter_api(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "agentic-developer-core/1.0",
+            "User-Agent": "quality-gates-toolkit/1.0",
         },
         method="POST",
     )
@@ -1016,6 +1016,33 @@ def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
     return verdict, reasoning, findings_list
 
 
+def resolve_workspace_dir() -> str:
+    """Resolve the repository root the diff is reviewed against.
+
+    Precedence:
+      1. ``REVIEW_WORKSPACE_DIR`` — explicit override for deployments where
+         the checkout layout is not the GitHub default.
+      2. ``GITHUB_WORKSPACE/repo`` — the called-workflow layout: the reusable
+         workflow checks out the caller's repository under ``path: repo``,
+         while ``GITHUB_WORKSPACE`` itself is the runner workspace root.
+      3. ``GITHUB_WORKSPACE`` — root checkouts (single-repo runners).
+      4. ``os.getcwd()`` — local/manual runs.
+
+    Returns the first candidate that exists as a directory (or the last
+    fallback when nothing exists yet).
+    """
+    explicit = os.getenv("REVIEW_WORKSPACE_DIR")
+    if explicit:
+        return explicit
+    github_workspace = os.getenv("GITHUB_WORKSPACE")
+    if github_workspace:
+        repo_dir = os.path.join(github_workspace, "repo")
+        if os.path.isdir(repo_dir):
+            return repo_dir
+        return github_workspace
+    return os.getcwd()
+
+
 def load_architecture_context(workspace_dir: str) -> str:
     """Loads docs/context.md and all docs/adr/*.md files relative to workspace_dir."""
     context_lines = []
@@ -1438,11 +1465,18 @@ def _enrich_chunk(chunk_diff: str, workspace_dir: str) -> str:
 
     Uses enrich_diff_with_function_context from scripts/enrichment.py.
     Applied per-chunk so each file's context stays with its diff segment
-    (avoids ADR-0023's pooled-format orphan bug).
+    (avoids ADR-0023's pooled-format orphan bug). Enrichment is best-effort:
+    any failure (missing optional tree-sitter pack, parse errors, I/O) logs a
+    warning and passes the raw chunk through — a judge run must never crash
+    because optional context could not be produced.
     """
-    from enrichment import enrich_diff_with_function_context
+    try:
+        from enrichment import enrich_diff_with_function_context
 
-    return enrich_diff_with_function_context(chunk_diff, workspace_dir)
+        return enrich_diff_with_function_context(chunk_diff, workspace_dir)
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash a judge run
+        log(f"[WARN] Diff enrichment skipped ({exc}); passing raw chunk through.")
+        return chunk_diff
 
 
 def run_judge(
@@ -1500,8 +1534,8 @@ def run_judge(
         if len(diff) <= budget:
             span.set_attribute("eval.chunk_count", 1)
             span.set_attribute("eval.diff_total_chars", len(diff))
-            span.set_attribute("eval.workspace_dir", os.getenv("GITHUB_WORKSPACE", "."))
-            enriched_diff = _enrich_chunk(diff, os.getenv("GITHUB_WORKSPACE", "."))
+            span.set_attribute("eval.workspace_dir", resolve_workspace_dir())
+            enriched_diff = _enrich_chunk(diff, resolve_workspace_dir())
             status, reasoning, findings, error, used_fallback, final_model = (
                 _run_single_chunk(
                     judge_key,
@@ -1533,7 +1567,7 @@ def run_judge(
 
         chunk_results: list[tuple[str, str, list[str], str | None, bool, str]] = []
         for batch in batches:
-            enriched_batch = _enrich_chunk(batch, os.getenv("GITHUB_WORKSPACE", "."))
+            enriched_batch = _enrich_chunk(batch, resolve_workspace_dir())
             result = _run_single_chunk(
                 judge_key,
                 prompt,
@@ -1752,7 +1786,7 @@ def main():
                 "duration_seconds": None,
             }
 
-        workspace_dir = os.getenv("GITHUB_WORKSPACE", ".")
+        workspace_dir = resolve_workspace_dir()
         syntax_passed, syntax_errors, syntax_checked = verify_python_syntax(
             workspace_dir, diff
         )
