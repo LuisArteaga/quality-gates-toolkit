@@ -23,6 +23,13 @@ on:
         description: Space-separated paths ruff and mypy run against.
         type: string
         default: "."
+      extra-pip-packages:
+        description: >-
+          Space-separated PyPI packages installed after the caller project
+          (mirrors the test.yml contract). Pass the single token `none` to
+          skip (empty string falls back to the default).
+        type: string
+        default: "none"
 
 permissions:
   contents: read
@@ -49,6 +56,27 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install "ruff==${{ env.RUFF_VERSION }}" "mypy==${{ env.MYPY_VERSION }}"
+
+      - name: Install caller project (dependency surface for mypy)
+        # mypy needs the caller's runtime dependencies importable: under
+        # strict settings with no global ignore_missing_imports, a bare
+        # environment fails on every third-party import (first observed on a
+        # consumer whose lint previously ran inside a pip install -e .[dev]
+        # monolith). This mirrors the test.yml environment so mypy sees what
+        # pytest sees. Best-effort by contract: callers without build
+        # metadata keep the previous lint-only behavior.
+        working-directory: repo
+        run: |
+          pip install --upgrade pip
+          if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
+            pip install -e .
+          else
+            echo "No build metadata found; mypy runs against the bare environment."
+          fi
+          for pkg in ${{ inputs.extra-pip-packages }}; do
+            if [ "$pkg" = "none" ]; then continue; fi
+            pip install "$pkg"
+          done
 
       - name: Ruff lint
         working-directory: repo
