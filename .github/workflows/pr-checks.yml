@@ -13,7 +13,7 @@ name: PR checks (composite)
 #
 # Internal references are RELATIVE (./.github/workflows/...) so the nested
 # workflows resolve from the SAME commit/tag as this composite — no version
-# drift between pr-checks.yml@v1.0.1 and its micro-workflows. toolkit-ref only
+# drift between pr-checks.yml@v1.0.2 and its micro-workflows. toolkit-ref only
 # selects the ref of the second checkout (the Python implementation).
 #
 # Defaults are deliberately NEUTRAL (public contract, not the origin
@@ -103,7 +103,7 @@ on:
       toolkit-ref:
         description: Toolkit ref for the Python-implementation checkout.
         type: string
-        default: "v1.0.1"
+        default: "v1.0.2"
     secrets:
       openrouter-api-key:
         description: OpenRouter API key for the LLM judges (only needed when enable-llm-review).

@@ -107,7 +107,7 @@ def test_composite_ships_neutral_public_defaults():
     assert inputs["lint-paths"]["default"] == "."
     assert inputs["cov-paths"]["default"] == "."
     assert inputs["extra-pip-packages"]["default"] == "none"
-    assert inputs["toolkit-ref"]["default"] == "v1.0.1"
+    assert inputs["toolkit-ref"]["default"] == "v1.0.2"
     assert inputs["config-path"]["default"] == "config/factory.json"
 
 
@@ -115,10 +115,12 @@ def test_lint_job_installs_caller_dependencies_for_mypy():
     """lint.yml must give mypy the caller's dependency surface: under strict
     settings with no global ignore_missing_imports, a bare environment fails
     on every third-party import (first observed on a consumer on v1.0.0,
-    whose lint previously ran inside a pip install -e .[dev] monolith)."""
+    whose lint previously ran inside a pip install -e .[dev] monolith), and a
+    runtime-only install fails on tests/ imports like pytest/httpx (observed
+    on the same consumer's canary at v1.0.1)."""
     raw = (WORKFLOWS / "lint.yml").read_text()
     assert "Install caller project" in raw
-    assert "pip install -e ." in raw
+    assert 'pip install -e ".[dev]"' in raw
     assert raw.index("Install caller project") < raw.index("Mypy typecheck")
     inputs = _call_inputs(_load("lint.yml"))
     assert inputs["extra-pip-packages"]["default"] == "none"
@@ -141,7 +143,7 @@ def test_every_toolkit_ref_input_defaults_to_the_release_tag():
         inputs = inputs.get("inputs") or {}
         if "toolkit-ref" not in inputs:
             continue
-        assert inputs["toolkit-ref"].get("default") == "v1.0.1", (
+        assert inputs["toolkit-ref"].get("default") == "v1.0.2", (
             f"{path.name}: toolkit-ref must default to the concrete release tag"
         )
 
