@@ -6,14 +6,11 @@ Tests cover: hunk extraction, tree-sitter boundary detection, truncation at
 false-positive regression scenario.
 """
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-# Make enrichment.py importable from the same directory.
-scripts_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(scripts_dir))
+# enrichment.py is importable via the conftest.py sys.path bootstrap.
 
 from enrichment import (  # noqa: E402
     _parse_hunks,

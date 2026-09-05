@@ -195,3 +195,28 @@ gaps are closed.
 ### Amendments
 
 None.
+
+## D-0009 — Toolkit scope: review-runtime tooling only
+
+- Date: 2026-09-05
+- Status: Accepted
+
+### Decision
+
+The toolkit ships only what a consumer's CI executes: the judge engine, the
+deterministic gates, and their direct support modules. Ported orchestrator-
+runtime machinery with no consumer in this repository was deleted:
+`telemetry.py`'s loop/phase span state machine, persistent telemetry state
+files, retrospective span export, and security-block buffering;
+`redaction.py` remains solely as the redaction layer for the opt-in
+Langfuse/OTLP export path. The unused `review.sh` wrapper was removed — CI
+invokes `review.py` directly. `docs/context.md` is the stable architecture
+entry point for review judges; decisions live in `DECISIONS.md`.
+
+### Rationale
+
+The bootstrap ported files wholesale for parity, shipping ~400 lines of
+dormant machinery that nothing in the toolkit can ever invoke (the
+orchestrator runtime stays in the origin project). Dead code in a public
+v1.0.0 is a maintenance and review-noise liability; deleting it keeps the
+radical-simplicity contract the toolkit's own judges enforce.

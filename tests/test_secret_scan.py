@@ -24,9 +24,9 @@ from unittest import mock
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "secret_scan.py"
 
-sys.path.insert(0, str(SCRIPT_PATH.parent))
-
+# secret_scan is importable via the conftest.py sys.path bootstrap.
 import secret_scan  # noqa: E402
+from git_repo_base import TempGitRepoTestCase  # noqa: E402
 
 # Runtime-built fake credentials (see module docstring).
 PAT_FAKE = "ghp_" + "a" * 20
@@ -124,45 +124,7 @@ class TestScanFile(unittest.TestCase):
             self.assertEqual(findings[0][1], "github-pat")
 
 
-class TempGitRepoTestCase(unittest.TestCase):
-    """Base helper building an isolated git repository (mirrors the diff
-    coverage gate tests)."""
-
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.repo = Path(tmp.name)
-        self._git("init", "-b", "main")
-        self._write("README.md", "# temp repo\n")
-        self._commit("initial")
-
-    def _git(self, *args: str) -> None:
-        subprocess.run(
-            ["git", *args],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-    def _write(self, rel_path: str, content: str) -> Path:
-        target = self.repo / rel_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return target
-
-    def _commit(self, message: str) -> None:
-        self._git("add", "-A")
-        self._git(
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@example.com",
-            "commit",
-            "-m",
-            message,
-        )
-
+class TestCliInGitRepo(TempGitRepoTestCase):
     def _run_scanner(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, str(SCRIPT_PATH), *args],
@@ -171,8 +133,6 @@ class TempGitRepoTestCase(unittest.TestCase):
             text=True,
         )
 
-
-class TestCliInGitRepo(TempGitRepoTestCase):
     def test_clean_tracked_tree_passes(self):
         result = self._run_scanner()
         self.assertEqual(result.returncode, 0, result.stderr)

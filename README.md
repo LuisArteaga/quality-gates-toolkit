@@ -25,8 +25,8 @@ this public repository at a pinned ref (`toolkit-ref`).
 ### Python tooling (`scripts/`)
 
 `review.py` (judge engine), `diff_coverage_gate.py`, `secret_scan.py`,
-`review.sh`, plus internal modules (`judge_config.py`, `telemetry.py`,
-`redaction.py`, `enrichment.py`). `enrichment.py` optionally uses
+plus internal modules (`judge_config.py`, `telemetry.py`, `redaction.py`,
+`enrichment.py`). `enrichment.py` optionally uses
 `tree-sitter-language-pack` (dev extra) for enclosing-function-context
 enrichment and degrades gracefully without it.
 

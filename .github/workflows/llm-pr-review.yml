@@ -38,6 +38,15 @@ on:
         description: Best-effort parser prefetch for enclosing-function enrichment.
         type: boolean
         default: false
+      batch-budget-chars:
+        description: >-
+          Per-batch character budget for splitting the judge diff. Raise it
+          (e.g. 500000) so large bootstrap diffs are judged in a single
+          batch — per-batch judges otherwise only see their own slice and
+          may wrongly report "tests missing" for files whose tests landed
+          in another batch.
+        type: string
+        default: ""
     secrets:
       openrouter-api-key:
         description: OpenRouter API key for the LLM judges.
@@ -71,6 +80,7 @@ jobs:
       # Resolved relative to the caller checkout (review.py runs with
       # working-directory: repo below).
       REVIEW_CONFIG_PATH: ${{ inputs.config-path }}
+      REVIEW_BATCH_BUDGET_CHARS: ${{ inputs.batch-budget-chars || '200000' }}
     steps:
       - name: Check out caller repository (PR head)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

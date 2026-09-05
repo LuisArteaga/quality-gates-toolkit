@@ -1061,8 +1061,19 @@ def load_architecture_context(workspace_dir: str) -> str:
 
 
 def _get_batch_budget() -> int:
-    """Resolve the per-batch character budget, overridable via env var."""
-    return int(os.getenv("REVIEW_BATCH_BUDGET_CHARS", str(BATCH_BUDGET_CHARS)))
+    """Resolve the per-batch character budget, overridable via env var.
+
+    An unset OR empty env var falls back to the default, and a non-integer
+    value falls back too — a bad knob must never crash a review mid-run.
+    """
+    raw = os.getenv("REVIEW_BATCH_BUDGET_CHARS", "")
+    if not raw:
+        return BATCH_BUDGET_CHARS
+    try:
+        return int(raw)
+    except ValueError:
+        log(f"[WARN] Invalid REVIEW_BATCH_BUDGET_CHARS={raw!r}; using default.")
+        return BATCH_BUDGET_CHARS
 
 
 def augment_judge_prompt(

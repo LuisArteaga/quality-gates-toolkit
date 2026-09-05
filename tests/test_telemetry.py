@@ -1,17 +1,14 @@
-"""Behavioral tests for scripts/telemetry.py's public surface.
+"""Behavioral tests for scripts/telemetry.py's retained surface.
 
-Covers the pure helpers (OTLP endpoint resolution, Langfuse credential
-handling), the state lifecycle (loop/phase spans, security blocks, state
-file persistence), and the OTel processors (local JSONL writer, baggage
-session-id propagation) driven through REAL SDK spans. The retrospective
-export path (_export_recorded_spans) is deliberately out of scope — it is
-a follow-up coverage item (D-0008).
+The toolkit ships only the PR-review tracing runtime: OTLP/Langfuse export
+configuration, the local JSONL span processor, the baggage session-id
+processor, and the no-op fallbacks. The orchestrator loop/phase machinery
+was removed as out-of-scope (see DECISIONS.md D-0009) and has no tests here.
 """
 
 import base64
 import datetime
 import json
-from pathlib import Path
 
 import pytest
 
@@ -31,16 +28,12 @@ ENV_VARS = (
 
 @pytest.fixture(autouse=True)
 def isolated_logs(tmp_path, monkeypatch):
-    """Point the logs/state dir at a per-test tmp dir and clear env knobs."""
+    """Point the logs dir at a per-test tmp dir and clear env knobs."""
     for var in ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     log_dir = tmp_path / "agent_logs"
     monkeypatch.setenv("AGENT_LOG_PATH", str(log_dir))
     yield log_dir
-
-
-def _state_file(log_dir: Path) -> Path:
-    return log_dir / "telemetry_state.json"
 
 
 # ---------------------------------------------------------------------------
@@ -53,19 +46,31 @@ def test_configure_otlp_endpoint_env_wins(monkeypatch):
     assert telemetry.configure_otlp_endpoint() == "http://collector:4318/v1/traces"
 
 
+def test_configure_otlp_endpoint_docker_default(monkeypatch):
+    monkeypatch.setattr(telemetry, "_is_docker", lambda: True)
+    endpoint = telemetry.configure_otlp_endpoint()
+    assert endpoint == "http://host.docker.internal:4318/v1/traces"
+    # The default is also SET in the env so the exporter picks it up.
+    import os
+
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == endpoint
+
+
 def test_configure_otlp_endpoint_empty_outside_docker():
     assert telemetry.configure_otlp_endpoint() == ""
 
 
 def test_langfuse_requires_both_keys(monkeypatch):
-    assert not telemetry._is_langfuse_configured()
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
-    assert not telemetry._is_langfuse_configured()
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
-    assert telemetry._is_langfuse_configured()
+    assert telemetry._is_langfuse_configured() is True
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY")
+    assert telemetry._is_langfuse_configured() is False
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY")
+    assert telemetry._is_langfuse_configured() is False
 
 
-def test_langfuse_auth_header_is_basic_auth_with_ingestion_version(monkeypatch):
+def test_langfuse_auth_header_shape(monkeypatch):
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
     headers = telemetry._build_langfuse_auth_header()
@@ -74,117 +79,48 @@ def test_langfuse_auth_header_is_basic_auth_with_ingestion_version(monkeypatch):
     assert headers["x-langfuse-ingestion-version"] == "4"
 
 
-def test_get_tracer_uses_dummy_without_otel(monkeypatch):
-    monkeypatch.setattr(telemetry, "HAS_OTEL", False)
-    assert isinstance(telemetry.get_tracer(), telemetry.DummyTracer)
-
-
 # ---------------------------------------------------------------------------
-# get_agent_logs_dir fallbacks
+# Log directory resolution
 # ---------------------------------------------------------------------------
 
 
-def test_logs_dir_from_env(monkeypatch, isolated_logs):
+def test_agent_logs_dir_env_path_wins_and_is_created(isolated_logs):
     resolved = telemetry.get_agent_logs_dir()
-    assert Path(resolved) == isolated_logs.resolve()
+    assert resolved == str(isolated_logs.resolve())
+    assert isolated_logs.exists()
 
 
-def test_logs_dir_falls_back_to_tmp_when_env_unset(monkeypatch):
-    monkeypatch.delenv("AGENT_LOG_PATH")
-    # Neither /workspace/.agent_logs nor the toolkit-local .agent_logs exists
-    # on CI/dev machines without the workspace layout.
-    assert telemetry.get_agent_logs_dir() == "/tmp/agent_logs"
+def test_agent_logs_dir_falls_back_to_tmp(monkeypatch):
+    monkeypatch.delenv("AGENT_LOG_PATH", raising=False)
+    resolved = telemetry.get_agent_logs_dir()
+    assert resolved == "/tmp/agent_logs"
 
 
 # ---------------------------------------------------------------------------
-# State lifecycle (public path: start/end loop + phases, security blocks)
+# Tracer fallbacks
 # ---------------------------------------------------------------------------
 
 
-def test_record_security_block_buffers_and_persists(isolated_logs):
-    telemetry.record_security_block("plan", "/etc/shadow", issue_number=7)
-    entry = telemetry._state["security_blocks"][0]
-    assert entry["layer"] == "plan"
-    assert entry["blocked_path"] == "/etc/shadow"
-    assert entry["issue_number"] == 7
-    assert _state_file(isolated_logs).exists()
+def test_get_tracer_returns_real_tracer_with_otel():
+    if not telemetry.HAS_OTEL:
+        pytest.skip("opentelemetry not installed")
+    tracer = telemetry.get_tracer()
+    assert tracer is not None
 
 
-def test_start_loop_resets_state_sets_session_and_persists(isolated_logs):
-    telemetry.record_security_block("runtime", "/etc/passwd")
-    telemetry.start_orchestrator_loop(issue_number=7, branch="feat/x")
-    assert telemetry._langfuse_session_id == "7_feat/x"
-    assert telemetry._state["loop_start_time"] is not None
-    assert telemetry._state["loop_issue_number"] == 7
-    assert telemetry._state["security_blocks"] == []
-    assert _state_file(isolated_logs).exists()
+def test_get_tracer_returns_dummy_without_otel(monkeypatch):
+    monkeypatch.setattr(telemetry, "HAS_OTEL", False)
+    tracer = telemetry.get_tracer()
+    assert isinstance(tracer, telemetry.DummyTracer)
 
 
-def test_phase_lifecycle_end_captures_exit_and_tokens(isolated_logs):
-    telemetry.start_orchestrator_phase("plan")
-    assert telemetry._state["phases"]["plan"]["end_time"] is None
-    telemetry.end_orchestrator_phase(
-        exit_code=1,
-        prompt_tokens=10,
-        completion_tokens=5,
-        model_name="vendor/model-a",
-    )
-    phase = telemetry._state["phases"]["plan"]
-    assert phase["end_time"] is not None
-    assert phase["exit_code"] == 1
-    assert phase["prompt_tokens"] == 10
-    assert phase["completion_tokens"] == 5
-    assert phase["model_name"] == "vendor/model-a"
-
-
-def test_unknown_phase_name_is_ignored():
-    telemetry.start_orchestrator_phase("not-a-phase")
-    assert "not-a-phase" not in telemetry._state["phases"]
-
-
-def test_end_phase_without_active_phase_is_silent():
-    telemetry.end_orchestrator_phase()  # no phases recorded -> no-op
-
-
-def test_nested_phase_named_end(isolated_logs):
-    telemetry.start_orchestrator_phase("verify")
-    telemetry.start_orchestrator_phase("bineval", parent="verify")
-    telemetry.end_orchestrator_phase(phase_name="bineval", exit_code=0)
-    assert telemetry._state["phases"]["bineval"]["end_time"] is not None
-    assert telemetry._state["phases"]["verify"]["end_time"] is None
-    assert telemetry._state["phases"]["bineval"]["parent"] == "verify"
-
-
-def test_end_loop_stamps_exit_code_and_removes_state_file(isolated_logs):
-    telemetry.start_orchestrator_loop(issue_number=3, branch="main")
-    telemetry.end_orchestrator_loop(exit_code=2)
-    assert telemetry._state["loop_end_time"] is not None
-    assert telemetry._state["loop_exit_code"] == 2
-    assert not _state_file(isolated_logs).exists()
-
-
-def test_resume_merges_persisted_state(isolated_logs):
-    # Simulate a prior crashed cycle: state file on disk with exit code and
-    # an open phase; a NEW phase start must merge, not clobber.
-    isolated_logs.mkdir(parents=True, exist_ok=True)
-    prior = {
-        "loop_exit_code": None,
-        "loop_start_time": 123.0,
-        "loop_issue_number": 9,
-        "phases": {"execute": {"start_time": 1.0, "end_time": None, "exit_code": 0}},
-    }
-    _state_file(isolated_logs).write_text(json.dumps(prior), encoding="utf-8")
-    telemetry.start_orchestrator_phase("plan")
-    assert telemetry._state["loop_issue_number"] == 9
-    assert telemetry._state["phases"]["execute"]["start_time"] == 1.0
-    assert "plan" in telemetry._state["phases"]
-
-
-def test_corrupt_state_file_is_ignored(isolated_logs):
-    isolated_logs.mkdir(parents=True, exist_ok=True)
-    _state_file(isolated_logs).write_text("{not json", encoding="utf-8")
-    telemetry.start_orchestrator_phase("plan")
-    assert "plan" in telemetry._state["phases"]
+def test_dummy_span_is_a_silent_context_manager():
+    span = telemetry.DummySpan()
+    with span as s:
+        s.set_attribute("k", "v")
+        s.record_exception(RuntimeError("x"))
+        s.set_status(telemetry.DummyStatus(telemetry.DummyStatusCode.OK))
+    assert s is span
 
 
 # ---------------------------------------------------------------------------
@@ -195,33 +131,31 @@ def test_corrupt_state_file_is_ignored(isolated_logs):
 def test_init_telemetry_noop_without_otel(monkeypatch, capsys):
     monkeypatch.setattr(telemetry, "HAS_OTEL", False)
     telemetry.init_telemetry()
-    assert "no-op tracing mode" in capsys.readouterr().err
+    assert "[INFO] OpenTelemetry is not installed" in capsys.readouterr().err
 
 
-def test_init_telemetry_provider_lifecycle(isolated_logs, monkeypatch):
-    # Call 1 (fresh provider path): Langfuse keys -> Langfuse endpoint and
-    # auth headers on the OTLP exporter; provider registered globally.
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
-    telemetry.init_telemetry(issue_number=7, branch="main")
-    assert telemetry._langfuse_session_id == "7_main"
+def test_init_telemetry_is_idempotent(isolated_logs):
+    from opentelemetry.sdk.trace import TracerProvider
+
+    telemetry.init_telemetry()
+    telemetry.init_telemetry()
+    provider = telemetry.trace.get_tracer_provider()
+    assert isinstance(provider, TracerProvider)
+
+
+def test_init_telemetry_attaches_in_memory_exporter(isolated_logs):
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    telemetry.init_telemetry(in_memory_exporter=exporter)
     provider = telemetry.trace.get_tracer_provider()
     assert isinstance(provider, telemetry.TracerProvider)
 
-    # Call 2 (already-set provider path): no exporter passed -> only the
-    # Langfuse baggage processor attachment path runs.
-    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY")
-    monkeypatch.delenv("LANGFUSE_SECRET_KEY")
-    telemetry.init_telemetry(reset_state=False)
-
-
-def test_init_telemetry_session_id_unset_without_issue(isolated_logs):
-    telemetry.init_telemetry()
-    assert telemetry._langfuse_session_id is None
-
 
 # ---------------------------------------------------------------------------
-# OTel processors (real SDK spans)
+# LocalJSONLFileSpanProcessor
 # ---------------------------------------------------------------------------
 
 
@@ -252,6 +186,11 @@ def test_jsonl_processor_swallows_broken_spans(isolated_logs, capsys):
     processor = telemetry.LocalJSONLFileSpanProcessor()
     processor.on_end(object())  # no span API -> warn, never raise
     assert "failed to write span" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# BaggageSpanProcessor
+# ---------------------------------------------------------------------------
 
 
 def test_baggage_processor_copies_session_id(isolated_logs):

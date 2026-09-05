@@ -45,6 +45,10 @@ jobs:
       # The toolkit repo ships no config/factory.json (only the documented
       # example), so point the judges at the example config.
       config-path: config/factory.example.json
+      # Single-batch judging for the large bootstrap diff: per-batch judges
+      # only see their own slice of the file list and would otherwise report
+      # "no tests" for production files whose tests landed in another batch.
+      batch-budget-chars: "500000"
     secrets:
       openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
       judge-token: ${{ secrets.JUDGE_GH_TOKEN }}

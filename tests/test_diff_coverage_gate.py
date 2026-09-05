@@ -17,11 +17,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-# Make diff_coverage_gate.py importable from the same directory.
-scripts_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(scripts_dir))
+# diff_coverage_gate.py is importable via the conftest.py sys.path bootstrap.
 
 import diff_coverage_gate as gate  # noqa: E402
+from git_repo_base import TempGitRepoTestCase  # noqa: E402
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parent.parent / "scripts" / "diff_coverage_gate.py"
@@ -57,43 +56,8 @@ def _write_coverage_fixture(
     return target
 
 
-class TempGitRepoTestCase(unittest.TestCase):
-    """Base helper building an isolated two-commit git repository."""
-
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.repo = Path(tmp.name)
-        self._git("init", "-b", "main")
-        self._write("README.md", "# temp repo\n")
-        self._commit("initial")
-
-    def _git(self, *args: str) -> None:
-        subprocess.run(
-            ["git", *args],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-    def _write(self, rel_path: str, content: str) -> Path:
-        target = self.repo / rel_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return target
-
-    def _commit(self, message: str) -> None:
-        self._git("add", "-A")
-        self._git(
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@example.com",
-            "commit",
-            "-m",
-            message,
-        )
+class GateGitRepoTestCase(TempGitRepoTestCase):
+    """Adds branch handling used by the gate's merge-base scenarios."""
 
     def _checkout_branch(self, name: str, create: bool = False) -> None:
         args = ["checkout"]
@@ -319,7 +283,7 @@ class LoadMissingLinesTests(unittest.TestCase):
         self.assertEqual(loaded, {"pkg/mod.py": {3, 4}})
 
 
-class GateEndToEndTests(TempGitRepoTestCase):
+class GateEndToEndTests(GateGitRepoTestCase):
     def test_empty_diff_passes(self):
         """AC: no changed files -> exit 0."""
         report = _write_coverage_fixture(self.repo, {})
@@ -471,7 +435,7 @@ class GateEndToEndTests(TempGitRepoTestCase):
         self.assertIn("ranges.py: 2\u20133, 6", result.stdout)
 
 
-class InProcessCoverageCompletionTests(TempGitRepoTestCase):
+class InProcessCoverageCompletionTests(GateGitRepoTestCase):
     """Exercise branches the subprocess e2e tests cannot measure.
 
     The e2e suite runs the gate in a child process, so coverage.py never

@@ -5,7 +5,6 @@ import contextlib
 import io
 import json
 import os
-import sys
 import tempfile
 import unittest
 import urllib.error
@@ -13,9 +12,7 @@ from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# Make review.py importable from the same directory.
-scripts_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(scripts_dir))
+# review.py is importable via the conftest.py sys.path bootstrap (scripts dir).
 
 import review  # noqa: E402
 
@@ -2422,6 +2419,31 @@ class SubmitGitHubReviewTests(unittest.TestCase):
         ]
         review_cmd, _ = self._submit(responses, "approve")
         self.assertIn("--approve", review_cmd)
+
+
+class BatchBudgetTests(unittest.TestCase):
+    """Contract for the batch-budget knob: env override with safe fallbacks."""
+
+    def test_unset_env_uses_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(review._get_batch_budget(), review.BATCH_BUDGET_CHARS)
+
+    def test_empty_env_value_falls_back_to_default(self):
+        # Workflows pass declared-but-empty inputs as empty strings.
+        with patch.dict(os.environ, {"REVIEW_BATCH_BUDGET_CHARS": ""}):
+            self.assertEqual(review._get_batch_budget(), review.BATCH_BUDGET_CHARS)
+
+    def test_valid_env_value_is_parsed(self):
+        with patch.dict(os.environ, {"REVIEW_BATCH_BUDGET_CHARS": "500000"}):
+            self.assertEqual(review._get_batch_budget(), 500000)
+
+    def test_garbage_env_value_falls_back_with_warning(self):
+        with patch.dict(os.environ, {"REVIEW_BATCH_BUDGET_CHARS": "not-a-number"}):
+            captured_out = io.StringIO()
+            with contextlib.redirect_stdout(captured_out):
+                budget = review._get_batch_budget()
+            self.assertEqual(budget, review.BATCH_BUDGET_CHARS)
+            self.assertIn("Invalid REVIEW_BATCH_BUDGET_CHARS", captured_out.getvalue())
 
 
 if __name__ == "__main__":

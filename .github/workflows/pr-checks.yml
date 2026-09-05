@@ -91,6 +91,15 @@ on:
         description: Space-separated git pathspecs excluded from the judge diff.
         type: string
         default: ""
+      batch-budget-chars:
+        description: >-
+          Per-batch character budget for splitting the judge diff. Raise it
+          (e.g. 500000) so large diffs are judged in a single batch —
+          per-batch judges otherwise only see their own slice and may
+          wrongly report "tests missing" for files whose tests landed in
+          another batch.
+        type: string
+        default: ""
       toolkit-ref:
         description: Toolkit ref for the Python-implementation checkout.
         type: string
@@ -185,6 +194,7 @@ jobs:
       config-path: ${{ inputs.config-path }}
       diff-exclude: ${{ inputs.diff-exclude }}
       prefetch-tree-sitter: ${{ inputs.prefetch-tree-sitter }}
+      batch-budget-chars: ${{ inputs.batch-budget-chars }}
     secrets:
       # Explicit forwarding only — blanket secret propagation is
       # deliberately not used in a public product.

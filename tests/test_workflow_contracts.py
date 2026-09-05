@@ -111,6 +111,20 @@ def test_composite_ships_neutral_public_defaults():
     assert inputs["config-path"]["default"] == "config/factory.json"
 
 
+def test_batch_budget_input_is_forwarded_to_the_judge_workflow():
+    composite = _load("pr-checks.yml")
+    assert "batch-budget-chars" in _call_inputs(composite), (
+        "pr-checks.yml must expose the batch-budget-chars knob"
+    )
+    llm = _jobs(composite)["llmreview"]
+    assert llm["with"]["batch-budget-chars"] == "${{ inputs.batch-budget-chars }}"
+    judge = _load("llm-pr-review.yml")
+    env = judge["jobs"]["llm-pr-review"]["env"]
+    assert env["REVIEW_BATCH_BUDGET_CHARS"] == (
+        "${{ inputs.batch-budget-chars || '200000' }}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # D-0001: gate ordering / LLM cost gate
 # ---------------------------------------------------------------------------
