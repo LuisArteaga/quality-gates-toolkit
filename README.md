@@ -15,7 +15,7 @@ this public repository at a pinned ref (`toolkit-ref`).
 | Workflow | Purpose |
 |---|---|
 | `pr-checks.yml` | **Opinionated composite entry point.** Orchestrates all gates as jobs and centrally enforces the ordering policy (deterministic gates before LLM review — the cost gate). |
-| `lint.yml` | ruff lint + format check + mypy with toolkit-pinned tool versions. |
+| `lint.yml` | ruff lint + format check + mypy with toolkit-pinned tool versions. Installs the caller project (`pip install -e .`, best-effort) plus `extra-pip-packages` first, so mypy sees the caller's dependency surface. |
 | `test.yml` | pytest with coverage, floor enforcement (`coverage-floor` is required), uploads `coverage.json` as an artifact. |
 | `diff-coverage.yml` | 100% changed-line coverage gate (consumes the coverage artifact; PR events only). |
 | `security.yml` | Semgrep + pip-audit. |
@@ -35,7 +35,7 @@ enrichment and degrades gracefully without it.
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.0.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.0.1
     with:
       coverage-floor: 80
     secrets:
@@ -116,7 +116,7 @@ Each micro-workflow is independently callable, e.g.:
 ```yaml
 jobs:
   security:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.0.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.0.1
     with:
       scan-paths: "src"
 ```
@@ -156,7 +156,7 @@ repos:
 
 ## Versioning
 
-- `uses:` pins an immutable release tag (e.g. `@v1.0.0`); `toolkit-ref`
+- `uses:` pins an immutable release tag (e.g. `@v1.0.1`); `toolkit-ref`
   (default = that same tag) selects the Python implementation checkout.
   Overrides are deliberate.
 - Public contracts (verdict-block format, gate ordering, routing modes,
