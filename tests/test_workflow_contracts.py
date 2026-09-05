@@ -120,7 +120,9 @@ def test_lint_job_installs_caller_dependencies_for_mypy():
     on the same consumer's canary at v1.0.1)."""
     raw = (WORKFLOWS / "lint.yml").read_text()
     assert "Install caller project" in raw
-    assert 'pip install -e ".[dev]"' in raw
+    # The dev-extra install and its fallback must ship together: removing the
+    # plain editable fallback would break callers without a dev extra.
+    assert 'pip install -e ".[dev]" || pip install -e .' in raw
     assert raw.index("Install caller project") < raw.index("Mypy typecheck")
     inputs = _call_inputs(_load("lint.yml"))
     assert inputs["extra-pip-packages"]["default"] == "none"
