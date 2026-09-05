@@ -903,15 +903,26 @@ def submit_github_review(pr_number, action, body_content):
             raise Exception(f"Failed to fetch PR author: {stderr.strip()}")
         pr_author = stdout.strip()
 
-        # Get Current User
+        # Get Current User. A user-context token (PAT) can always do this;
+        # the repository GITHUB_TOKEN fallback is an installation token and
+        # gets HTTP 403 on /user. In that case proceed WITHOUT the identity
+        # guard: the verdict decides the action, and GitHub itself rejects
+        # review actions on one's own PR server-side, so the guard is a
+        # convenience for trusted-identity flows (D-0005), not a boundary.
         user_cmd = ["gh", "api", "user", "--jq", ".login"]
         ret, stdout, stderr = run_command(user_cmd)
         if ret != 0:
-            raise Exception(f"Failed to fetch current user: {stderr.strip()}")
-        current_user = stdout.strip()
+            log(
+                f"[WARN] Could not fetch current user ({stderr.strip()}); "
+                "submitting with the verdict action (self-review guard "
+                "unavailable for non-user tokens)."
+            )
+            current_user = None
+        else:
+            current_user = stdout.strip()
 
         # Determine appropriate review action flag
-        if current_user == pr_author:
+        if current_user is not None and current_user == pr_author:
             action_flag = "--comment"
         elif action == "approve":
             action_flag = "--approve"

@@ -2353,5 +2353,76 @@ class UsageAccountingTests(unittest.TestCase):
             review.append_kpi_summary({})
 
 
+class SubmitGitHubReviewTests(unittest.TestCase):
+    """Contract tests for the GitHub review submission path.
+
+    run_command is patched at the module boundary (public attribute), which
+    keeps the tests hermetic while the production code path — author lookup,
+    identity guard, action-flag decision, gh pr review invocation — runs for
+    real.
+    """
+
+    PR_AUTHOR = "pr-author-login"
+    JUDGE_USER = "trusted-judge-user"
+
+    @staticmethod
+    def _fake_run_command(responses):
+        """Builds a run_command stand-in driven by an ordered response list.
+
+        Each entry is (returncode, stdout, stderr); the received command
+        vectors are recorded for assertions.
+        """
+        calls = []
+
+        def _run(cmd, env=None):
+            calls.append(list(cmd))
+            ret, out, err = responses.pop(0)
+            return ret, out, err
+
+        return _run, calls
+
+    def _submit(self, responses, action):
+        runner, calls = self._fake_run_command(responses)
+        with patch.object(review, "run_command", side_effect=runner):
+            review.submit_github_review(1, action, "review body")
+        review_cmds = [c for c in calls if c[:3] == ["gh", "pr", "review"]]
+        self.assertEqual(len(review_cmds), 1)
+        return review_cmds[0], calls
+
+    def test_user_lookup_failure_falls_back_to_verdict_action(self):
+        """AC: installation tokens get 403 on /user; submission must still
+        proceed with the verdict-derived action instead of crashing."""
+        responses = [
+            (0, self.PR_AUTHOR + "\n", ""),  # gh pr view -> author
+            (1, "", "gh: Resource not accessible by integration (HTTP 403)"),
+            (0, "", ""),  # gh pr review
+        ]
+        review_cmd, _ = self._submit(responses, "request-changes")
+        self.assertIn("--request-changes", review_cmd)
+        self.assertIn("--body-file", review_cmd)
+
+    def test_judge_user_equal_to_pr_author_downgrades_to_comment(self):
+        """AC: the identity guard downgrades approve to comment when the
+        token owner IS the PR author (self-approval protection)."""
+        responses = [
+            (0, self.PR_AUTHOR + "\n", ""),
+            (0, self.PR_AUTHOR + "\n", ""),  # gh api user == author
+            (0, "", ""),
+        ]
+        review_cmd, _ = self._submit(responses, "approve")
+        self.assertIn("--comment", review_cmd)
+        self.assertNotIn("--approve", review_cmd)
+
+    def test_distinct_user_and_approve_action_posts_approval(self):
+        """AC: a normal trusted-identity run posts an approval."""
+        responses = [
+            (0, self.PR_AUTHOR + "\n", ""),
+            (0, self.JUDGE_USER + "\n", ""),
+            (0, "", ""),
+        ]
+        review_cmd, _ = self._submit(responses, "approve")
+        self.assertIn("--approve", review_cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

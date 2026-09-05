@@ -47,3 +47,4 @@ jobs:
       config-path: config/factory.example.json
     secrets:
       openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+      judge-token: ${{ secrets.JUDGE_GH_TOKEN }}

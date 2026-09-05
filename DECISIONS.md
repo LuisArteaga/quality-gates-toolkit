@@ -115,7 +115,13 @@ their integration docs, not in the generic workflow contract.
 
 ### Amendments
 
-None.
+- 2026-09-05: The `github.token` fallback is an installation token, which
+  gets HTTP 403 on `GET /user`, so the self-review identity guard cannot
+  run. Submission now proceeds with the verdict-derived action and logs a
+  warning; GitHub rejects review actions on one's own PR server-side, so
+  the guard is a convenience, not a security boundary. Consumers needing
+  trusted identity pass a user PAT as `judge-token` (convention:
+  `JUDGE_GH_TOKEN`).
 
 ## D-0006 — Hybrid workflow architecture
 
