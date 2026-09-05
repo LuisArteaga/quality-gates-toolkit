@@ -46,7 +46,7 @@ LEAK_LINE = f't = "{PAT_FAKE}"\n'
 _B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 
-def _LOCKFILE_INTEGRITY_BODY() -> str:
+def _lockfile_integrity_body() -> str:
     run = "".join(_B64_ALPHABET[(i * 7) % 64] for i in range(86))
     line = f'"integrity": "sha512-{run}=="\n'
     return line + line
@@ -132,7 +132,7 @@ class TestScanFile(unittest.TestCase):
         # non-skipped file, so the empty result for the lockfile name
         # comes from the skip, not from the content being too weak to
         # match.
-        text = _LOCKFILE_INTEGRITY_BODY()
+        text = _lockfile_integrity_body()
         self.assertEqual(
             [f[1] for f in secret_scan.scan_text(text, "b.txt")],
             ["high-entropy-base64", "high-entropy-base64"],
@@ -143,7 +143,7 @@ class TestScanFile(unittest.TestCase):
             self.assertEqual(secret_scan.scan_file(path), [])
 
     def test_yarn_lock_is_skipped(self):
-        text = _LOCKFILE_INTEGRITY_BODY()
+        text = _lockfile_integrity_body()
         self.assertEqual(
             [f[1] for f in secret_scan.scan_text(text, "b.txt")],
             ["high-entropy-base64", "high-entropy-base64"],
