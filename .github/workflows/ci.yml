@@ -1,0 +1,54 @@
+name: CI
+
+# Self-caller dogfooding: this repository's pull requests run its OWN
+# pr-checks composite from the PR commit (relative ./ reference — never the
+# published @v1, which would test the released version instead of the
+# changes under review).
+#
+# toolkit-ref passes the PR head SHA so the second checkout inside the
+# micro-workflows (secret scan, diff gate, judges) also uses THIS PR's
+# scripts, not the published tag. Same-repo assumption: for fork PRs the
+# head SHA does not exist in this repository and the checkout would fail —
+# documented limitation, revisit if fork contributions become real.
+#
+# LLM review only runs for same-repo PRs: fork PRs have no access to
+# repository secrets, and must not fail just because the OpenRouter key is
+# (correctly) unavailable to them.
+#
+# toolkit's own policy values (this caller is the reference consumer):
+# coverage-floor 80, tree-sitter prefetch on (enrichment tests parse code),
+# LLM review on for trusted PRs with the trusted default inputs.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  quality:
+    uses: ./.github/workflows/pr-checks.yml
+    with:
+      python-version: "3.12"
+      lint-paths: "scripts"
+      cov-paths: "scripts"
+      coverage-floor: 80
+      # Bootstrap carve-out (D-0008): ported tooling predates changed-line
+      # coverage discipline; total-coverage floor stays ON. Re-enable per
+      # the D-0008 follow-up issue.
+      enable-diff-gate: false
+      prefetch-tree-sitter: true
+      enable-llm-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+      toolkit-ref: ${{ github.event.pull_request.head.sha }}
+      # The toolkit repo ships no config/factory.json (only the documented
+      # example), so point the judges at the example config.
+      config-path: config/factory.example.json
+      # Single-batch judging for the large bootstrap diff: per-batch judges
+      # only see their own slice of the file list and would otherwise report
+      # "no tests" for production files whose tests landed in another batch.
+      batch-budget-chars: "500000"
+    secrets:
+      openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+      judge-token: ${{ secrets.JUDGE_GH_TOKEN }}

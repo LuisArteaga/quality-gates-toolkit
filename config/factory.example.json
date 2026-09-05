@@ -1,0 +1,28 @@
+{
+  "_comment": "Example judge configuration. Node names are fixed by the toolkit's review.py (syntax_lint, test_coverage, architecture, security). Routing modes: omit 'routing' (or null) = auto-route, OpenRouter picks the provider per request with automatic failover. 'routing': [..] = pinned provider order, failover disabled (quality-controlled, less resilient). See README #routing-modes.",
+  "syntax_lint": {
+    "model": "z-ai/glm-5.3-flash",
+    "routing": null,
+    "temperature": 0.0,
+    "fallback_model": "z-ai/glm-5.2"
+  },
+  "test_coverage": {
+    "model": "z-ai/glm-5.3-flash",
+    "routing": ["Z.AI", "Novita", "DeepInfra", "Modal", "Fireworks", "Friendli", "Parasail", "Phala"],
+    "temperature": 0.0,
+    "fallback_model": "z-ai/glm-5.2"
+  },
+  "architecture": {
+    "model": "z-ai/glm-5.3-flash",
+    "routing": ["Z.AI", "Novita", "DeepInfra", "Modal", "Fireworks", "Friendli", "Parasail", "Phala"],
+    "temperature": 0.0,
+    "fallback_model": "moonshotai/kimi-k3"
+  },
+  "security": {
+    "model": "moonshotai/kimi-k3",
+    "routing": ["Together", "Fireworks", "Parasail", "Moonshot AI", "DeepInfra"],
+    "temperature": 0.0,
+    "options": { "reasoning": { "effort": "high" } },
+    "fallback_model": "z-ai/glm-5.2"
+  }
+}

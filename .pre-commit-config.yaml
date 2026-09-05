@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep in lockstep with RUFF_VERSION in .github/workflows/lint.yml.
+    rev: v0.16.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: secret-scan
+        name: Secret Scan (toolkit scripts)
+        entry: python3 scripts/secret_scan.py --staged
+        language: system
+        pass_filenames: false

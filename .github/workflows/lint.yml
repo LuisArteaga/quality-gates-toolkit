@@ -1,0 +1,63 @@
+name: Lint & Typecheck (reusable)
+
+# Micro-workflow: ruff lint, ruff format check, and mypy typecheck against
+# the CALLER repository's paths. Inside a called workflow the `github`
+# context belongs to the caller, so a bare checkout fetches the caller tree.
+#
+# Tool versions are pinned HERE as toolkit discipline: consumers get a
+# consistent, known-good toolchain per toolkit-ref without maintaining pins
+# themselves. (Unpinned `pip install -e .[dev]` caused recurring
+# local-vs-CI formatter skew in the origin repository.) Tool bumps ship as
+# new toolkit releases, never silently on a floating ref.
+#
+# No toolkit checkout needed: this workflow only runs pip-installed tools.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version for mypy.
+        type: string
+        default: "3.12"
+      lint-paths:
+        description: Space-separated paths ruff and mypy run against.
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      RUFF_VERSION: "0.16.6"
+      MYPY_VERSION: "2.3.1"
+    steps:
+      - name: Check out caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install pinned tools
+        run: |
+          pip install --upgrade pip
+          pip install "ruff==${{ env.RUFF_VERSION }}" "mypy==${{ env.MYPY_VERSION }}"
+
+      - name: Ruff lint
+        working-directory: repo
+        run: ruff check ${{ inputs.lint-paths }}
+
+      - name: Ruff format check
+        working-directory: repo
+        run: ruff format --check ${{ inputs.lint-paths }}
+
+      - name: Mypy typecheck
+        working-directory: repo
+        run: mypy ${{ inputs.lint-paths }}
