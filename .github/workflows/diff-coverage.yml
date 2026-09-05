@@ -1,0 +1,62 @@
+name: Diff coverage gate (reusable)
+
+# Micro-workflow: deterministic hard check (origin: ADR-0052) — fails when
+# any production line added by the caller's PR diff is not exercised by the
+# tests. Runs BEFORE any LLM judge tokens are spent (the composite orders it
+# so). Consumes the coverage.json artifact uploaded by the test workflow.
+#
+# The base SHA comes from the event payload so non-default bases and forked
+# heads resolve correctly; the script resolves the merge-base itself
+# (requires fetch-depth: 0 on the caller checkout).
+
+on:
+  workflow_call:
+    inputs:
+      toolkit-ref:
+        description: Toolkit ref providing the gate implementation.
+        type: string
+        default: "v1"
+      coverage-artifact:
+        description: Artifact name uploaded by the test workflow.
+        type: string
+        default: "coverage-json"
+
+permissions:
+  contents: read
+
+jobs:
+  diff-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out caller repository (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: repo
+          persist-credentials: false
+
+      - name: Check out quality-gates-toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LuisArteaga/quality-gates-toolkit
+          ref: ${{ inputs.toolkit-ref }}
+          path: toolkit
+          persist-credentials: false
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.coverage-artifact }}
+          path: repo
+
+      - name: Validate event
+        # Fail loudly instead of silently no-op: this gate is meaningless
+        # without a PR diff base.
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "[ERR] diff-coverage requires a pull_request event (needs a diff base)."
+          exit 1
+
+      - name: Run diff coverage gate
+        working-directory: repo
+        run: python3 ../toolkit/scripts/diff_coverage_gate.py --coverage-json coverage.json --base ${{ github.event.pull_request.base.sha }}

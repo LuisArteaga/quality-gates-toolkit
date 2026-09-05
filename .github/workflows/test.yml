@@ -1,0 +1,122 @@
+name: Test with coverage (reusable)
+
+# Micro-workflow: pytest with coverage against the CALLER repository, then
+# upload coverage.json as an artifact for the toolkit's diff-coverage
+# workflow (artifact handoff — deterministic gates run on separate runners
+# by design, so the JSON report travels through actions/upload-artifact).
+#
+# coverage-floor is deliberately REQUIRED (no default): a gate threshold is
+# the consumer's policy decision, not plumbing. Callers of the composite
+# pr-checks.yml must state it explicitly.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version for pytest.
+        type: string
+        default: "3.12"
+      cov-paths:
+        description: >-
+          Space-separated import paths measured with repeated --cov flags.
+        type: string
+        default: "."
+      coverage-floor:
+        description: Minimum total coverage percentage for --cov-fail-under.
+        type: number
+        required: true
+      extra-pip-packages:
+        description: >-
+          Space-separated PyPI packages installed after `pip install -e .[dev]`.
+          Pass the single token `none` to skip (empty string falls back to the
+          default: GitHub expressions cannot distinguish an explicitly empty
+          input from an unset one).
+        type: string
+        default: "none"
+      prefetch-tree-sitter:
+        description: Cache and prefetch tree-sitter parsers (consumers whose tests parse code).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        working-directory: repo
+        run: |
+          pip install --upgrade pip
+          pip install -e .[dev]
+          # Callers without extra runtime packages pass the single token
+          # `none`; the loop is a no-op for them.
+          for pkg in ${{ inputs.extra-pip-packages }}; do
+            if [ "$pkg" = "none" ]; then continue; fi
+            pip install "$pkg"
+          done
+
+      - name: Cache tree-sitter parsers
+        if: inputs.prefetch-tree-sitter
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/tree-sitter-language-pack
+          key: tree-sitter-${{ runner.os }}-py3.12-${{ hashFiles('repo/pyproject.toml') }}
+          restore-keys: |
+            tree-sitter-${{ runner.os }}-py3.12-
+
+      - name: Prefetch tree-sitter parsers
+        # tree-sitter-language-pack downloads parser binaries at runtime; a
+        # fresh checkout has no cache and the releases endpoint can rate-limit
+        # or 503. Prefetch the common languages with retries so tests have
+        # parsers available locally.
+        if: inputs.prefetch-tree-sitter
+        run: |
+          python3 -c "
+          import tree_sitter_language_pack as tsp
+          import time, sys
+          langs = ['python', 'tsx', 'typescript']
+          for attempt in range(3):
+              try:
+                  tsp.prefetch(languages=langs)
+                  print(f'Prefetched: {tsp.downloaded_languages()}')
+                  sys.exit(0)
+              except Exception as e:
+                  print(f'Attempt {attempt+1} failed: {e}')
+                  time.sleep(5)
+          print('ERROR: Failed to prefetch tree-sitter parsers after 3 attempts')
+          sys.exit(1)
+          "
+
+      - name: Run pytest with coverage
+        # The COV_FLAGS loop expands cov-paths into repeated --cov flags so
+        # callers measure their own package layout. term-missing keeps the
+        # per-file missing-line table visible in the CI logs; the JSON report
+        # feeds the Diff Coverage Gate.
+        working-directory: repo
+        run: |
+          set -o pipefail
+          COV_FLAGS=""
+          for path in ${{ inputs.cov-paths }}; do
+            COV_FLAGS="$COV_FLAGS --cov=$path"
+          done
+          pytest $COV_FLAGS --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=${{ inputs.coverage-floor }}
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-json
+          path: repo/coverage.json
+          if-no-files-found: error

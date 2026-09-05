@@ -1,0 +1,42 @@
+[project]
+name = "quality-gates-toolkit"
+version = "1.0.0"
+description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Luis Arteaga" }]
+dependencies = []
+
+[project.optional-dependencies]
+# Runtime dependency of scripts/enrichment.py (enclosing-function-context
+# enrichment). review.py imports it lazily and degrades gracefully when the
+# pack is absent, but the test suite exercises parsers directly.
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+    "pyyaml",
+    "tree-sitter-language-pack",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+# Deliberately narrow, mirroring the proven selector the ported scripts were
+# formatted against in the origin repository (pyflakes + critical
+# pycodestyle). Broadening is a separate, deliberate toolkit decision — the
+# judge prompt-string literals in review.py are long by design.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+explicit_package_bases = true
+disable_error_code = ["call-arg", "dict-item", "assignment"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

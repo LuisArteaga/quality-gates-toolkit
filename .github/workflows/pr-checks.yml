@@ -1,0 +1,192 @@
+name: PR checks (composite)
+
+# Opinionated entry point of the toolkit. Orchestrates the micro-workflows
+# as JOBS (each called workflow gets its own runner) and centrally enforces
+# the two policy invariants that consumers must not re-implement:
+#
+# 1. DETERMINISTIC GATES BEFORE LLM REVIEW — the judges only spend tokens
+#    when every enabled deterministic gate is green (a failing
+#    lint/mypy/pytest/diff-coverage run already blocks the merge, so
+#    reviewing that diff adds cost without authority).
+# 2. COVERAGE ARTIFACT HANDOFF — the test workflow uploads coverage.json,
+#    the diff-coverage workflow consumes it.
+#
+# Internal references are RELATIVE (./.github/workflows/...) so the nested
+# workflows resolve from the SAME commit/tag as this composite — no version
+# drift between pr-checks.yml@v1 and its micro-workflows. toolkit-ref only
+# selects the ref of the second checkout (the Python implementation).
+#
+# Defaults are deliberately NEUTRAL (public contract, not the origin
+# repository's config): repo-specific values belong in the caller. See
+# DECISIONS.md (D-0004 neutral defaults, D-0001 gate ordering, D-0006
+# hybrid architecture).
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version used by lint, test, and security.
+        type: string
+        default: "3.12"
+      lint-paths:
+        description: Space-separated paths for ruff, mypy, and Semgrep.
+        type: string
+        default: "."
+      cov-paths:
+        description: >-
+          Space-separated import paths measured with repeated --cov flags.
+        type: string
+        default: "."
+      coverage-floor:
+        description: Minimum total coverage percentage (REQUIRED policy decision).
+        type: number
+        required: true
+      extra-pip-packages:
+        description: >-
+          Space-separated PyPI packages installed after `pip install -e .[dev]`.
+          Pass the single token `none` to skip.
+        type: string
+        default: "none"
+      prefetch-tree-sitter:
+        description: Cache and prefetch tree-sitter parsers (consumers whose tests parse code).
+        type: boolean
+        default: false
+      enable-lint:
+        description: Run ruff + mypy (lint.yml).
+        type: boolean
+        default: true
+      enable-test:
+        description: Run pytest with coverage (test.yml).
+        type: boolean
+        default: true
+      enable-security:
+        description: Run Semgrep + pip-audit (security.yml).
+        type: boolean
+        default: true
+      enable-semgrep:
+        description: Run the Semgrep scan inside security.yml.
+        type: boolean
+        default: true
+      enable-pip-audit:
+        description: Run the pip-audit check inside security.yml.
+        type: boolean
+        default: true
+      enable-secret-scan:
+        description: Run the toolkit secret scanner (secret-scan.yml).
+        type: boolean
+        default: true
+      enable-diff-gate:
+        description: Enforce 100% changed-line coverage on pull_request events.
+        type: boolean
+        default: true
+      enable-llm-review:
+        description: Run the LLM judges after all deterministic gates are green.
+        type: boolean
+        default: false
+      config-path:
+        description: Judge config path relative to the caller repository root.
+        type: string
+        default: "config/factory.json"
+      diff-exclude:
+        description: Space-separated git pathspecs excluded from the judge diff.
+        type: string
+        default: ""
+      toolkit-ref:
+        description: Toolkit ref for the Python-implementation checkout.
+        type: string
+        default: "v1"
+    secrets:
+      openrouter-api-key:
+        description: OpenRouter API key for the LLM judges (only needed when enable-llm-review).
+        required: false
+      judge-token:
+        description: Optional review-posting token; falls back to github.token.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    if: inputs.enable-lint
+    uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
+    with:
+      python-version: ${{ inputs.python-version }}
+      lint-paths: ${{ inputs.lint-paths }}
+
+  test:
+    if: inputs.enable-test
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+    with:
+      python-version: ${{ inputs.python-version }}
+      cov-paths: ${{ inputs.cov-paths }}
+      coverage-floor: ${{ inputs.coverage-floor }}
+      extra-pip-packages: ${{ inputs.extra-pip-packages }}
+      prefetch-tree-sitter: ${{ inputs.prefetch-tree-sitter }}
+
+  security:
+    if: inputs.enable-security
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+    with:
+      python-version: ${{ inputs.python-version }}
+      scan-paths: ${{ inputs.lint-paths }}
+      enable-semgrep: ${{ inputs.enable-semgrep }}
+      enable-pip-audit: ${{ inputs.enable-pip-audit }}
+
+  secretscan:
+    if: inputs.enable-secret-scan
+    uses: ./.github/workflows/secret-scan.yml
+    permissions:
+      contents: read
+    with:
+      toolkit-ref: ${{ inputs.toolkit-ref }}
+
+  diffcoverage:
+    # Only meaningful when the test job produced coverage.json and the event
+    # carries a PR diff base.
+    needs: [test]
+    if: >-
+      ${{ inputs.enable-diff-gate &&
+          needs.test.result == 'success' &&
+          github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/diff-coverage.yml
+    permissions:
+      contents: read
+    with:
+      toolkit-ref: ${{ inputs.toolkit-ref }}
+
+  llmreview:
+    # The cost gate: run ONLY when every ENABLED deterministic gate is
+    # green. A disabled gate shows up as 'skipped' and imposes no
+    # constraint (success OR skipped for every gate) — `!cancelled()`
+    # neutralizes the default needs-failure suppression so this expression
+    # is the single source of truth for the ordering policy.
+    needs: [lint, test, security, secretscan, diffcoverage]
+    if: >-
+      ${{ inputs.enable-llm-review &&
+          !cancelled() &&
+          (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
+          (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+          (needs.security.result == 'success' || needs.security.result == 'skipped') &&
+          (needs.secretscan.result == 'success' || needs.secretscan.result == 'skipped') &&
+          (needs.diffcoverage.result == 'success' || needs.diffcoverage.result == 'skipped') }}
+    uses: ./.github/workflows/llm-pr-review.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      toolkit-ref: ${{ inputs.toolkit-ref }}
+      config-path: ${{ inputs.config-path }}
+      diff-exclude: ${{ inputs.diff-exclude }}
+      prefetch-tree-sitter: ${{ inputs.prefetch-tree-sitter }}
+    secrets:
+      # Explicit forwarding only — blanket secret propagation is
+      # deliberately not used in a public product.
+      openrouter-api-key: ${{ secrets.openrouter-api-key }}
+      judge-token: ${{ secrets.judge-token }}
