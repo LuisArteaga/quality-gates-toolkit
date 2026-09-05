@@ -226,3 +226,27 @@ dormant machinery that nothing in the toolkit can ever invoke (the
 orchestrator runtime stays in the origin project). Dead code in a public
 v1.0.0 is a maintenance and review-noise liability; deleting it keeps the
 radical-simplicity contract the toolkit's own judges enforce.
+
+## D-0010 — Lockfile skip in the secret scanner
+
+- Date: 2026-09-07
+- Status: Accepted
+
+### Decision
+
+`secret_scan.py` skips package-manager lockfiles by file name:
+`uv.lock` (pre-existing) is joined by `package-lock.json` and
+`yarn.lock`. Real secrets in ordinary source files continue to be
+scanned; the skip applies to the exact file names only.
+
+### Rationale
+
+Lockfile integrity fields embed base64 content hashes of PUBLIC
+package tarballs. They are content addresses, not credentials, but
+their length and entropy reliably trip the `high-entropy-base64`
+heuristic — observed on the first npm consumer's PR, where every
+`sha512-` integrity string in `package-lock.json` was reported as a
+finding. `uv.lock` was already skipped for the same reason; this
+extends the same carve-out to the npm/yarn ecosystem instead of
+forcing consumers to choose between a lockfile and a green
+deterministic gate.

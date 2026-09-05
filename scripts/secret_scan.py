@@ -40,7 +40,11 @@ def scan_text(text: str, filename: str):
 
 
 def scan_file(path: Path) -> list:
-    if path.name in (".env.example", "uv.lock"):
+    # Skip package-manager lockfiles: their integrity fields carry base64
+    # content hashes of PUBLIC package tarballs. These are content
+    # addresses, not secrets, and they reliably trip the base64 entropy
+    # heuristic (observed with npm's package-lock.json sha512 fields).
+    if path.name in (".env.example", "uv.lock", "package-lock.json", "yarn.lock"):
         return []
     if is_binary(path):
         return []

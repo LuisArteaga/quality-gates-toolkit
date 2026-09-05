@@ -109,6 +109,31 @@ class TestScanFile(unittest.TestCase):
             path.write_text(f"{OR_KEY_FAKE}\n", encoding="utf-8")
             self.assertEqual(secret_scan.scan_file(path), [])
 
+    def test_package_lock_json_is_skipped(self):
+        # npm lockfiles carry sha512 base64 integrity hashes of public
+        # package tarballs — content addresses, not secrets.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package-lock.json"
+            b64 = "QUJD" * 10 + "QUJD"
+            path.write_text(f'"integrity": "sha512-{b64}"\n', encoding="utf-8")
+            self.assertEqual(secret_scan.scan_file(path), [])
+
+    def test_yarn_lock_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "yarn.lock"
+            b64 = "QUJD" * 10 + "QUJD"
+            path.write_text(f'integrity "sha512-{b64}"\n', encoding="utf-8")
+            self.assertEqual(secret_scan.scan_file(path), [])
+
+    def test_real_secrets_still_scanned_outside_lockfiles(self):
+        # The lockfile skip must not leak into normal source files.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package.json"
+            path.write_text(f'{{"k": "{PAT_FAKE}"}}\n', encoding="utf-8")
+            findings = secret_scan.scan_file(path)
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0][1], "github-pat")
+
     def test_binary_file_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "blob.bin"
