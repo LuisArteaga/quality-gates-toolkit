@@ -2,7 +2,7 @@ name: CI
 
 # Self-caller dogfooding: this repository's pull requests run its OWN
 # pr-checks composite from the PR commit (relative ./ reference — never the
-# published @v1, which would test the released version instead of the
+# published @v1.0.0, which would test the released version instead of the
 # changes under review).
 #
 # toolkit-ref passes the PR head SHA so the second checkout inside the

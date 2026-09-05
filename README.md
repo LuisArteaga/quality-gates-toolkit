@@ -35,7 +35,7 @@ enrichment and degrades gracefully without it.
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.0.0
     with:
       coverage-floor: 80
     secrets:
@@ -62,7 +62,7 @@ Each micro-workflow is independently callable, e.g.:
 ```yaml
 jobs:
   security:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.0.0
     with:
       scan-paths: "src"
 ```
@@ -102,8 +102,9 @@ repos:
 
 ## Versioning
 
-- `@v1` is the stable default ref; `toolkit-ref` (default `v1`) selects the
-  Python implementation checkout. Overrides are deliberate (pin `v1.2.3`).
+- `uses:` pins an immutable release tag (e.g. `@v1.0.0`); `toolkit-ref`
+  (default = that same tag) selects the Python implementation checkout.
+  Overrides are deliberate.
 - Public contracts (verdict-block format, gate ordering, routing modes,
   defaults) are recorded in [`DECISIONS.md`](DECISIONS.md) and only change
   with a new major ref.
