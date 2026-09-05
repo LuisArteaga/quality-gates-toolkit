@@ -58,18 +58,19 @@ jobs:
           pip install "ruff==${{ env.RUFF_VERSION }}" "mypy==${{ env.MYPY_VERSION }}"
 
       - name: Install caller project (dependency surface for mypy)
-        # mypy needs the caller's runtime dependencies importable: under
-        # strict settings with no global ignore_missing_imports, a bare
-        # environment fails on every third-party import (first observed on a
-        # consumer whose lint previously ran inside a pip install -e .[dev]
-        # monolith). This mirrors the test.yml environment so mypy sees what
-        # pytest sees. Best-effort by contract: callers without build
-        # metadata keep the previous lint-only behavior.
+        # mypy needs the caller's dependencies importable: under strict
+        # settings with no global ignore_missing_imports, a bare environment
+        # fails on every third-party import. Runtime-only install is NOT
+        # enough either — lint-paths commonly includes tests/, which import
+        # pytest/httpx and friends, so this mirrors the test.yml environment
+        # (pip install -e .[dev]) exactly: mypy must see what pytest sees.
+        # Best-effort by contract: callers without build metadata (or without
+        # a dev extra) keep the previous lint-only behavior.
         working-directory: repo
         run: |
           pip install --upgrade pip
           if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
-            pip install -e .
+            pip install -e ".[dev]" || pip install -e .
           else
             echo "No build metadata found; mypy runs against the bare environment."
           fi
