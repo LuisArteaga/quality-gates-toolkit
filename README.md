@@ -35,7 +35,7 @@ enrichment and degrades gracefully without it.
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.0.3
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.0.4
     with:
       coverage-floor: 80
     secrets:
@@ -117,7 +117,7 @@ Each micro-workflow is independently callable, e.g.:
 ```yaml
 jobs:
   security:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.0.3
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.0.4
     with:
       scan-paths: "src"
 ```
@@ -157,7 +157,7 @@ repos:
 
 ## Versioning
 
-- `uses:` pins an immutable release tag (e.g. `@v1.0.3`); `toolkit-ref`
+- `uses:` pins an immutable release tag (e.g. `@v1.0.4`); `toolkit-ref`
   (default = that same tag) selects the Python implementation checkout.
   Overrides are deliberate.
 - Public contracts (verdict-block format, gate ordering, routing modes,
