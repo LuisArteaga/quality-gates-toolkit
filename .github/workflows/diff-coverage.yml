@@ -15,7 +15,7 @@ on:
       toolkit-ref:
         description: Toolkit ref providing the gate implementation.
         type: string
-        default: "v1.0.3"
+        default: "v1.0.4"
       coverage-artifact:
         description: Artifact name uploaded by the test workflow.
         type: string
