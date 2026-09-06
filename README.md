@@ -44,7 +44,8 @@ jobs:
 
 `coverage-floor` is deliberately **required** — a gate threshold is a policy
 decision, not plumbing. All deterministic gates default ON; the LLM review
-defaults OFF (it needs secrets). Minimal caller floor:
+defaults OFF (it needs secrets) and runs only on `pull_request` events —
+on other triggers (e.g. `push`) the judge job skips. Minimal caller floor:
 
 ```yaml
 permissions:

@@ -8,7 +8,7 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   workflow_call; the composite orchestrates JOBS with relative ./ refs.
 - D-0001 gate ordering: the LLM review job runs only after every enabled
   deterministic gate is green (success OR skipped — disabled gates must
-  not block the cost gate).
+  not block the cost gate) and only on pull_request events (D-0011).
 - D-0004 neutral defaults: no origin-repository fossils in the public API;
   coverage-floor is a REQUIRED policy input.
 - D-0005 secrets contract: explicit forwarding only (no blanket secret
@@ -191,6 +191,16 @@ def test_llm_review_cost_gate_tolerates_only_skipped_gates():
         assert f"needs.{gate}.result == 'skipped'" in condition, gate
     assert "inputs.enable-llm-review" in condition
     assert "!cancelled()" in condition
+
+
+def test_llm_review_runs_only_on_pull_request_events():
+    """Judges need a PR to review — the judge workflow fail-fasts on an
+    empty PR number, so a caller triggered on other events (e.g. push)
+    with enable-llm-review: true would otherwise turn permanently red
+    (observed as a trap on a consumer repository)."""
+    jobs = _jobs(_load("pr-checks.yml"))
+    condition = jobs["llmreview"]["if"]
+    assert "github.event_name == 'pull_request'" in condition
 
 
 def test_diff_coverage_runs_only_after_test_success_and_on_pr_events():
