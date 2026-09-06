@@ -2,7 +2,7 @@ name: PR checks (composite)
 
 # Opinionated entry point of the toolkit. Orchestrates the micro-workflows
 # as JOBS (each called workflow gets its own runner) and centrally enforces
-# the two policy invariants that consumers must not re-implement:
+# the three policy invariants that consumers must not re-implement:
 #
 # 1. DETERMINISTIC GATES BEFORE LLM REVIEW — the judges only spend tokens
 #    when every enabled deterministic gate is green (a failing
@@ -10,6 +10,9 @@ name: PR checks (composite)
 #    reviewing that diff adds cost without authority).
 # 2. COVERAGE ARTIFACT HANDOFF — the test workflow uploads coverage.json,
 #    the diff-coverage workflow consumes it.
+# 3. LLM REVIEW ONLY ON PULL_REQUEST EVENTS — judges need a PR to review
+#    (llm-pr-review.yml fail-fasts on an empty PR number); on any other
+#    event the composite skips the judge job instead of failing.
 #
 # Internal references are RELATIVE (./.github/workflows/...) so the nested
 # workflows resolve from the SAME commit/tag as this composite — no version
@@ -18,8 +21,8 @@ name: PR checks (composite)
 #
 # Defaults are deliberately NEUTRAL (public contract, not the origin
 # repository's config): repo-specific values belong in the caller. See
-# DECISIONS.md (D-0004 neutral defaults, D-0001 gate ordering, D-0006
-# hybrid architecture).
+# DECISIONS.md (D-0004 neutral defaults, D-0001 gate ordering, D-0011
+# PR-only review, D-0006 hybrid architecture).
 
 on:
   workflow_call:
@@ -177,6 +180,11 @@ jobs:
     # constraint (success OR skipped for every gate) — `!cancelled()`
     # neutralizes the default needs-failure suppression so this expression
     # is the single source of truth for the ordering policy.
+    #
+    # Judges also need a pull request to review: the judge workflow
+    # fail-fasts on an empty PR number, so a caller triggered on other
+    # events (e.g. push) skips this job instead of turning permanently
+    # red on every run.
     needs: [lint, test, security, secretscan, diffcoverage]
     if: >-
       ${{ inputs.enable-llm-review &&
@@ -185,7 +193,8 @@ jobs:
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
           (needs.security.result == 'success' || needs.security.result == 'skipped') &&
           (needs.secretscan.result == 'success' || needs.secretscan.result == 'skipped') &&
-          (needs.diffcoverage.result == 'success' || needs.diffcoverage.result == 'skipped') }}
+          (needs.diffcoverage.result == 'success' || needs.diffcoverage.result == 'skipped') &&
+          github.event_name == 'pull_request' }}
     uses: ./.github/workflows/llm-pr-review.yml
     permissions:
       contents: read

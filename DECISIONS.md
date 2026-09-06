@@ -254,3 +254,26 @@ lockfile-named file — e.g. tokens in authenticated registry "resolved"
 URLs — would have evaded every detector). The token-shape carve-out only
 affects the one heuristic the digests actually false-positive on, so a
 lockfile carrying a genuine secret is still flagged.
+
+## D-0011 — LLM review runs only on pull_request events
+
+- Date: 2026-09-06
+- Status: Accepted
+
+### Decision
+
+The composite's `llmreview` job carries a
+`github.event_name == 'pull_request'` guard in addition to the
+gate-ordering conditions. A caller that triggers the composite on other
+events (e.g. `push`) never runs the judges — the job skips.
+
+### Rationale
+
+Judges without a pull request to review are meaningless: the judge
+workflow fail-fasts on an empty PR number, so a push-triggered caller with
+`enable-llm-review: true` had a permanently red judge job on every push to
+the default branch — a broken pipeline signal with zero review value
+(observed as a trap on a consumer repository, 2026-09-07). The guard keeps
+the composite's contract that consumers pass repo-specific *values* while
+the toolkit owns the *policy* invariants; direct micro-workflow callers
+keep the loud fail-fast as their diagnostic.
