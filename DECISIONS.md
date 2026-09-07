@@ -277,3 +277,40 @@ the default branch — a broken pipeline signal with zero review value
 the composite's contract that consumers pass repo-specific *values* while
 the toolkit owns the *policy* invariants; direct micro-workflow callers
 keep the loud fail-fast as their diagnostic.
+
+## D-0012 — JS gates: the harness owns the environment, the project owns the tools
+
+- Date: 2026-09-08
+- Status: Accepted
+
+### Decision
+
+The JavaScript/TypeScript gates (`js-test.yml`, `js-typecheck.yml`) fix the
+harness and the script contract — nothing else. The toolkit owns the Node
+runtime (`node-version` input, default `22`), the checkout, `npm ci`, and
+the npm dependency cache. The consumer owns every tool: test runner,
+TypeScript, and all their configuration live in the caller's
+`package.json`. The script contract is fixed in v1 — `js-test.yml` always
+runs `npm test`, `js-typecheck.yml` always runs `npm run typecheck`, with
+no command inputs. Package-manager support is npm only: `npm ci` fails
+loudly without a lockfile, and the setup-node dependency cache requires
+one too. The same scripts ship as `language: system` pre-commit hooks
+(`js-test`, `js-typecheck`) that run full-project, not staged-scoped.
+
+### Rationale
+
+The Python gates pin their tools in the toolkit (ruff/mypy versions in
+`lint.yml`) because the toolkit itself defines those gates' semantics. A
+JS project's toolchain is consumer identity, not plumbing: jest, vitest,
+mocha, and tsc configurations differ per project, and the toolkit would
+serve nobody by picking winners. The fixed script names give the toolkit a
+stable interface — the npm equivalent of a Makefile target contract — and
+a missing script fails the job loudly via npm's own "Missing script" error,
+keeping diagnostics in the consumer's vocabulary. npm-only v1 follows
+D-0009's scope minimalism: pnpm/yarn can be added later as additive
+`workflow_call` inputs without breaking existing callers, while a
+mis-chosen default package manager would break every caller from day one.
+The new workflows take no `toolkit-ref`: like `lint.yml`, they run no
+Python implementation checkout. Deferred by the same scope rule: an ESLint
+gate (no consumer runs ESLint yet), JS diff-coverage (needs a cobertura
+artifact design), and composite language toggles.

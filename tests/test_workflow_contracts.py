@@ -17,6 +17,8 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   OpenRouter validation.
 - D-0007 tagged execution: third-party actions SHA-pinned; coverage.json
   handed from test.yml to diff-coverage.yml as an artifact.
+- D-0012 JS gates: the harness owns the environment, the project owns the
+  tools — fixed npm script contracts, node-version as the only input.
 """
 
 from pathlib import Path
@@ -33,6 +35,8 @@ MICRO_WORKFLOWS = [
     "secret-scan.yml",
     "diff-coverage.yml",
     "llm-pr-review.yml",
+    "js-test.yml",
+    "js-typecheck.yml",
 ]
 TOOLKIT_REPO = "LuisArteaga/quality-gates-toolkit"
 TOOLKIT_CHECKOUT_PATH = "toolkit"
@@ -307,6 +311,48 @@ def test_third_party_actions_are_sha_pinned():
 
 
 # ---------------------------------------------------------------------------
+# D-0012: JavaScript / TypeScript gates
+# ---------------------------------------------------------------------------
+
+
+JS_GATES = {
+    "js-test.yml": "npm test",
+    "js-typecheck.yml": "npm run typecheck",
+}
+
+
+def test_js_gates_ship_the_fixed_script_contract():
+    """The harness owns the environment, the project owns the tools
+    (D-0012): exactly one input (node-version) and one fixed npm script per
+    gate — no command inputs that would drift the toolkit into tool
+    ownership."""
+    for name, script in JS_GATES.items():
+        inputs = _call_inputs(_load(name))
+        assert set(inputs) == {"node-version"}, (
+            f"{name} must expose only node-version, got {sorted(inputs)}"
+        )
+        assert inputs["node-version"].get("default") == "22", (
+            f"{name}: node-version must default to '22'"
+        )
+        steps = next(iter(_jobs(_load(name)).values()))["steps"]
+        runs = [step.get("run", "") for step in steps]
+        install = [run for run in runs if run.strip().startswith("npm ci")]
+        assert install, f"{name} must install dependencies with npm ci"
+        assert runs[-1].strip() == script, (
+            f"{name} must end with the fixed script '{script}'"
+        )
+
+
+def test_js_gates_declare_no_toolkit_implementation_checkout():
+    """The JS gates run no Python implementation checkout — the harness only
+    needs Node and the caller's package.json (same as lint.yml)."""
+    for name in JS_GATES:
+        raw = (WORKFLOWS / name).read_text()
+        assert "toolkit-ref" not in raw, f"{name} must not take a toolkit-ref input"
+        assert TOOLKIT_REPO not in raw, f"{name} must not check out the toolkit"
+
+
+# ---------------------------------------------------------------------------
 # Self-dogfooding contract
 # ---------------------------------------------------------------------------
 
@@ -352,6 +398,22 @@ def test_pre_commit_hooks_file_declares_secret_scan():
     assert hook.get("language") == "python"
     assert hook.get("pass_filenames") is False
     assert hook.get("always_run") is True
+
+
+def test_pre_commit_hooks_declare_js_gates():
+    """D-0012: the js-* hooks run the same fixed scripts as the workflows —
+    system language (consumer's npm + node_modules), full-project scope."""
+    hooks_path = WORKFLOWS.parent.parent / ".pre-commit-hooks.yaml"
+    with hooks_path.open() as f:
+        hooks = yaml.safe_load(f)
+    expected = {"js-typecheck": "npm run typecheck", "js-test": "npm test"}
+    for hook_id, entry in expected.items():
+        hook = next((h for h in hooks if h.get("id") == hook_id), None)
+        assert hook is not None, f"hook id '{hook_id}' must exist (D-0012)"
+        assert hook.get("entry") == entry
+        assert hook.get("language") == "system"
+        assert hook.get("pass_filenames") is False
+        assert hook.get("always_run") is True
 
 
 def test_pyproject_is_installable_and_exposes_secret_scan_script():

@@ -1,12 +1,29 @@
 # Public pre-commit hook interface — this file makes the repository usable
 # as a remote pre-commit hook source (see README "Using as a pre-commit
-# hook"). Requires `language: python`, so the toolkit is pip-installable:
-# pyproject.toml declares the build backend and the `secret-scan` console
-# script that pre-commit invokes inside its isolated hook environment.
+# hook"). `secret-scan` requires `language: python`, so the toolkit is
+# pip-installable: pyproject.toml declares the build backend and the
+# `secret-scan` console script that pre-commit invokes inside its isolated
+# hook environment. The js-* hooks use `language: system` instead — they
+# invoke npm from the consumer's environment and need node_modules there
+# (see README "JavaScript / TypeScript gates").
 - id: secret-scan
   name: quality-gates-toolkit secret scan
   description: Best-effort regex scan for committed secrets (stdlib only).
   entry: secret-scan
   language: python
+  pass_filenames: false
+  always_run: true
+- id: js-typecheck
+  name: quality-gates-toolkit js-typecheck
+  description: Runs `npm run typecheck` over the full project (requires node_modules).
+  entry: npm run typecheck
+  language: system
+  pass_filenames: false
+  always_run: true
+- id: js-test
+  name: quality-gates-toolkit js-test
+  description: Runs `npm test` over the full project (requires node_modules).
+  entry: npm test
+  language: system
   pass_filenames: false
   always_run: true

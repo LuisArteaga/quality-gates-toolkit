@@ -21,6 +21,8 @@ this public repository at a pinned ref (`toolkit-ref`).
 | `security.yml` | Semgrep + pip-audit. |
 | `secret-scan.yml` | The toolkit's own stdlib secret scanner over all tracked files. |
 | `llm-pr-review.yml` | LLM judges over the PR diff, posting one combined review. Requires `openrouter-api-key`. |
+| `js-test.yml` | Runs the caller's `npm test` on a caller-chosen Node version. Harness-only (D-0012): the project owns the test runner via `package.json`. |
+| `js-typecheck.yml` | Runs the caller's `npm run typecheck` under the same JS harness contract. |
 
 ### Python tooling (`scripts/`)
 
@@ -125,6 +127,34 @@ jobs:
 The composite's ordering policy (especially the LLM cost gate) is enforced
 centrally — composing micro-workflows yourself means re-implementing it.
 
+## JavaScript / TypeScript gates
+
+`js-test.yml` and `js-typecheck.yml` bring the deterministic-gate pattern
+to npm projects. The contract (D-0012): **the harness owns the environment,
+the project owns the tools.**
+
+- The toolkit owns: the Node runtime (`node-version` input, default `22`),
+  the checkout, `npm ci`, and the npm dependency cache.
+- The project owns: all JS/TS tooling and its configuration via
+  `package.json` (test runner, TypeScript, etc.).
+- Fixed script contracts, no command inputs in v1: `js-test.yml` always
+  runs `npm test`; `js-typecheck.yml` always runs `npm run typecheck`.
+  A missing script fails the job loudly (npm: "Missing script").
+- npm only in v1: `npm ci` fails loudly without a lockfile — and the
+  setup-node dependency cache requires one (`package-lock.json` in the
+  repository root). pnpm/yarn may be added later as additive inputs.
+
+```yaml
+jobs:
+  js-test:
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/js-test.yml@v1.0.4
+    with:
+      node-version: "22"
+```
+
+The same scripts also ship as pre-commit hooks (`js-test`, `js-typecheck`)
+— see below.
+
 ## Judge configuration
 
 Judges read a consumer-owned config file (`config-path` input, default
@@ -150,10 +180,16 @@ Environment overrides (highest precedence): `SECURITY_MODEL` (per-node) >
 ```yaml
 repos:
   - repo: https://github.com/LuisArteaga/quality-gates-toolkit
-    rev: v1.0.0            # pin a tag
+    rev: v1.0.4            # pin a tag
     hooks:
       - id: secret-scan    # --staged scan of your staged changes
+      - id: js-typecheck   # full-project `npm run typecheck` (needs node_modules)
+      - id: js-test        # full-project `npm test` (needs node_modules)
 ```
+
+The JS hooks run full-project — not staged-scoped — so they require
+`node_modules` to be present in the consumer project (see
+[JavaScript / TypeScript gates](#javascript--typescript-gates)).
 
 ## Versioning
 
