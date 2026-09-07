@@ -27,3 +27,10 @@
   language: system
   pass_filenames: false
   always_run: true
+- id: js-lint
+  name: quality-gates-toolkit js-lint
+  description: Runs `npm run lint` over the full project (requires node_modules).
+  entry: npm run lint
+  language: system
+  pass_filenames: false
+  always_run: true

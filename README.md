@@ -23,6 +23,7 @@ this public repository at a pinned ref (`toolkit-ref`).
 | `llm-pr-review.yml` | LLM judges over the PR diff, posting one combined review. Requires `openrouter-api-key`. |
 | `js-test.yml` | Runs the caller's `npm test` on a caller-chosen Node version. Harness-only (D-0012): the project owns the test runner via `package.json`. |
 | `js-typecheck.yml` | Runs the caller's `npm run typecheck` under the same JS harness contract. |
+| `js-lint.yml` | Runs the caller's `npm run lint` under the same JS harness contract. |
 
 ### Python tooling (`scripts/`)
 
@@ -129,17 +130,18 @@ centrally — composing micro-workflows yourself means re-implementing it.
 
 ## JavaScript / TypeScript gates
 
-`js-test.yml` and `js-typecheck.yml` bring the deterministic-gate pattern
-to npm projects. The contract (D-0012): **the harness owns the environment,
-the project owns the tools.**
+`js-test.yml`, `js-typecheck.yml`, and `js-lint.yml` bring the
+deterministic-gate pattern to npm projects. The contract (D-0012): **the
+harness owns the environment, the project owns the tools.**
 
 - The toolkit owns: the Node runtime (`node-version` input, default `22`),
   the checkout, `npm ci`, and the npm dependency cache.
 - The project owns: all JS/TS tooling and its configuration via
-  `package.json` (test runner, TypeScript, etc.).
+  `package.json` (test runner, TypeScript, ESLint, etc.).
 - Fixed script contracts, no command inputs in v1: `js-test.yml` always
-  runs `npm test`; `js-typecheck.yml` always runs `npm run typecheck`.
-  A missing script fails the job loudly (npm: "Missing script").
+  runs `npm test`; `js-typecheck.yml` always runs `npm run typecheck`;
+  `js-lint.yml` always runs `npm run lint`. A missing script fails the
+  job loudly (npm: "Missing script").
 - npm only in v1: `npm ci` fails loudly without a lockfile — and the
   setup-node dependency cache requires one (`package-lock.json` in the
   repository root). pnpm/yarn may be added later as additive inputs.
@@ -152,8 +154,8 @@ jobs:
       node-version: "22"
 ```
 
-The same scripts also ship as pre-commit hooks (`js-test`, `js-typecheck`)
-— see below.
+The same scripts also ship as pre-commit hooks (`js-test`, `js-typecheck`,
+`js-lint`) — see below.
 
 ## Judge configuration
 
@@ -185,6 +187,7 @@ repos:
       - id: secret-scan    # --staged scan of your staged changes
       - id: js-typecheck   # full-project `npm run typecheck` (needs node_modules)
       - id: js-test        # full-project `npm test` (needs node_modules)
+      - id: js-lint        # full-project `npm run lint` (needs node_modules)
 ```
 
 The JS hooks run full-project — not staged-scoped — so they require
