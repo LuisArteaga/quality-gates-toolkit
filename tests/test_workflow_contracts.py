@@ -37,6 +37,7 @@ MICRO_WORKFLOWS = [
     "llm-pr-review.yml",
     "js-test.yml",
     "js-typecheck.yml",
+    "js-lint.yml",
 ]
 TOOLKIT_REPO = "LuisArteaga/quality-gates-toolkit"
 TOOLKIT_CHECKOUT_PATH = "toolkit"
@@ -318,6 +319,7 @@ def test_third_party_actions_are_sha_pinned():
 JS_GATES = {
     "js-test.yml": "npm test",
     "js-typecheck.yml": "npm run typecheck",
+    "js-lint.yml": "npm run lint",
 }
 
 
@@ -406,7 +408,11 @@ def test_pre_commit_hooks_declare_js_gates():
     hooks_path = WORKFLOWS.parent.parent / ".pre-commit-hooks.yaml"
     with hooks_path.open() as f:
         hooks = yaml.safe_load(f)
-    expected = {"js-typecheck": "npm run typecheck", "js-test": "npm test"}
+    expected = {
+        "js-typecheck": "npm run typecheck",
+        "js-test": "npm test",
+        "js-lint": "npm run lint",
+    }
     for hook_id, entry in expected.items():
         hook = next((h for h in hooks if h.get("id") == hook_id), None)
         assert hook is not None, f"hook id '{hook_id}' must exist (D-0012)"

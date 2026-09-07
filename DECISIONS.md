@@ -285,17 +285,19 @@ keep the loud fail-fast as their diagnostic.
 
 ### Decision
 
-The JavaScript/TypeScript gates (`js-test.yml`, `js-typecheck.yml`) fix the
-harness and the script contract — nothing else. The toolkit owns the Node
-runtime (`node-version` input, default `22`), the checkout, `npm ci`, and
-the npm dependency cache. The consumer owns every tool: test runner,
-TypeScript, and all their configuration live in the caller's
-`package.json`. The script contract is fixed in v1 — `js-test.yml` always
-runs `npm test`, `js-typecheck.yml` always runs `npm run typecheck`, with
-no command inputs. Package-manager support is npm only: `npm ci` fails
+The JavaScript/TypeScript gates (`js-test.yml`, `js-typecheck.yml`,
+`js-lint.yml`) fix the harness and the script contract — nothing else. The
+toolkit owns the Node runtime (`node-version` input, default `22`), the
+checkout, `npm ci`, and the npm dependency cache. The consumer owns every
+tool: test runner, TypeScript, ESLint, and all their configuration live in
+the caller's `package.json`. The script contract is fixed in v1 —
+`js-test.yml` always runs `npm test`, `js-typecheck.yml` always runs
+`npm run typecheck`, `js-lint.yml` always runs `npm run lint`, with no
+command inputs. Package-manager support is npm only: `npm ci` fails
 loudly without a lockfile, and the setup-node dependency cache requires
 one too. The same scripts ship as `language: system` pre-commit hooks
-(`js-test`, `js-typecheck`) that run full-project, not staged-scoped.
+(`js-test`, `js-typecheck`, `js-lint`) that run full-project, not
+staged-scoped.
 
 ### Rationale
 
@@ -311,6 +313,15 @@ D-0009's scope minimalism: pnpm/yarn can be added later as additive
 `workflow_call` inputs without breaking existing callers, while a
 mis-chosen default package manager would break every caller from day one.
 The new workflows take no `toolkit-ref`: like `lint.yml`, they run no
-Python implementation checkout. Deferred by the same scope rule: an ESLint
-gate (no consumer runs ESLint yet), JS diff-coverage (needs a cobertura
-artifact design), and composite language toggles.
+Python implementation checkout. Deferred by the same scope rule: JS
+diff-coverage (needs a cobertura artifact design) and composite language
+toggles.
+
+### Amendments
+
+- 2026-09-08: The deferred ESLint gate ships as `js-lint.yml` under the
+  unchanged harness contract — fixed script `npm run lint`, matching
+  `language: system` hook `js-lint`. The deferral's consumer premise still
+  holds: the gate becomes runtime-verifiable once the first npm consumer
+  adopts ESLint with a `lint` script; until then its contract is enforced
+  statically by the workflow contract tests.
