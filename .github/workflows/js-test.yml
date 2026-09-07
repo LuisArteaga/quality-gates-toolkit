@@ -1,0 +1,47 @@
+name: JS tests (reusable)
+
+# Micro-workflow: runs the caller's `npm test` script. The harness owns the
+# environment (Node runtime, npm ci, dependency cache); the project owns the
+# tools — the test runner and all its configuration live in the caller's
+# package.json (D-0012).
+#
+# The script contract is fixed in v1 (no command inputs): a missing script
+# fails the job loudly via npm's "Missing script" error. npm-only by design:
+# `npm ci` and the setup-node dependency cache both fail loudly without a
+# package-lock.json.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version for npm and the caller's toolchain.
+        type: string
+        default: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  js-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: repo/package-lock.json
+
+      - name: Install dependencies
+        working-directory: repo
+        run: npm ci
+
+      - name: Test
+        working-directory: repo
+        run: npm test
