@@ -38,7 +38,7 @@ enrichment and degrades gracefully without it.
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.1.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.2.0
     with:
       coverage-floor: 80
     secrets:
@@ -120,7 +120,7 @@ Each micro-workflow is independently callable, e.g.:
 ```yaml
 jobs:
   security:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.1.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.2.0
     with:
       scan-paths: "src"
 ```
@@ -149,7 +149,7 @@ harness owns the environment, the project owns the tools.**
 ```yaml
 jobs:
   js-test:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/js-test.yml@v1.1.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/js-test.yml@v1.2.0
     with:
       node-version: "22"
 ```
@@ -182,7 +182,7 @@ Environment overrides (highest precedence): `SECURITY_MODEL` (per-node) >
 ```yaml
 repos:
   - repo: https://github.com/LuisArteaga/quality-gates-toolkit
-    rev: v1.1.0            # pin a tag
+    rev: v1.2.0            # pin a tag
     hooks:
       - id: secret-scan    # --staged scan of your staged changes
       - id: js-typecheck   # full-project `npm run typecheck` (needs node_modules)
@@ -196,7 +196,7 @@ The JS hooks run full-project — not staged-scoped — so they require
 
 ## Versioning
 
-- `uses:` pins an immutable release tag (e.g. `@v1.1.0`); `toolkit-ref`
+- `uses:` pins an immutable release tag (e.g. `@v1.2.0`); `toolkit-ref`
   (default = that same tag) selects the Python implementation checkout.
   Overrides are deliberate.
 - Public contracts (verdict-block format, gate ordering, routing modes,
