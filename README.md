@@ -19,7 +19,7 @@ this public repository at a pinned ref (`toolkit-ref`).
 | `test.yml` | pytest with coverage, floor enforcement (`coverage-floor` is required), uploads `coverage.json` as an artifact. |
 | `diff-coverage.yml` | 100% changed-line coverage gate (consumes the coverage artifact; PR events only). |
 | `security.yml` | Semgrep + pip-audit. |
-| `secret-scan.yml` | The toolkit's own stdlib secret scanner over all tracked files. |
+| `secret-scan.yml` | The toolkit's own stdlib secret scanner over all tracked files. Best-effort regex detection — not a Gitleaks replacement; pair it with Gitleaks for defense in depth if you want broader coverage. |
 | `llm-pr-review.yml` | LLM judges over the PR diff, posting one combined review. Requires `openrouter-api-key`. |
 | `js-test.yml` | Runs the caller's `npm test` on a caller-chosen Node version. Harness-only (D-0012): the project owns the test runner via `package.json`. |
 | `js-typecheck.yml` | Runs the caller's `npm run typecheck` under the same JS harness contract. |
@@ -32,6 +32,24 @@ plus internal modules (`judge_config.py`, `telemetry.py`, `redaction.py`,
 `enrichment.py`). `enrichment.py` optionally uses
 `tree-sitter-language-pack` (dev extra) for enclosing-function-context
 enrichment and degrades gracefully without it.
+
+## Caller prerequisites
+
+"Zero local setup" means no toolkit checkout and no PAT for tooling — the
+gates still expect the *caller* project to be self-contained:
+
+- **Python repos:** pip-installable (`pyproject.toml`, `setup.py`, or
+  `setup.cfg`). The lint gate installs the caller best-effort
+  (`pip install -e ".[dev]" || pip install -e .`); the test gate installs
+  `.[dev]` and then runs pytest. pip treats a missing `[dev]` extra as a
+  warning, so the failure surfaces later as a missing pytest or missing
+  test imports — declare a `[dev]` extra with your test toolchain.
+- **JS repos:** `package-lock.json` in the repository root plus the fixed
+  script contracts (`test`, `typecheck`, `lint`) in `package.json` — see
+  [JavaScript / TypeScript gates](#javascript--typescript-gates).
+- **Judge config** (optional): `config/factory.json` relative to the caller
+  root. A missing or malformed file is not fatal — judges fall back to the
+  toolkit default model and log a `[WARN]`.
 
 ## Quick start (composite)
 
@@ -166,6 +184,45 @@ jobs:
 The composite's ordering policy (especially the LLM cost gate) is enforced
 centrally — composing micro-workflows yourself means re-implementing it.
 
+## Input reference
+
+### Composite (`pr-checks.yml`)
+
+| Input | Type | Default | Purpose |
+|---|---|---|---|
+| `python-version` | string | `"3.12"` | Python for lint, test, and security. |
+| `node-version` | string | `"22"` | Node for the JS gates. |
+| `lint-paths` | string | `"."` | Space-separated paths for ruff, mypy, and Semgrep. |
+| `cov-paths` | string | `"."` | Space-separated import paths, measured with repeated `--cov` flags. New top-level packages must be added here (see [Troubleshooting](#troubleshooting)). |
+| `coverage-floor` | number | **required** | Minimum total coverage; a policy decision. |
+| `extra-pip-packages` | string | `"none"` | Space-separated PyPI packages installed after the caller project; the token `none` skips. |
+| `prefetch-tree-sitter` | boolean | `false` | Cache and prefetch tree-sitter parsers (callers whose tests parse code). |
+| `enable-lint`, `enable-test`, `enable-security` | boolean | `true` | Python gate group toggles. |
+| `enable-semgrep`, `enable-pip-audit` | boolean | `true` | Sub-toggles inside the security gate. |
+| `enable-secret-scan` | boolean | `true` | Toolkit secret scanner (language-agnostic, always available). |
+| `enable-diff-gate` | boolean | `true` | 100% changed-line coverage (pull_request events only). |
+| `enable-js-lint`, `enable-js-test`, `enable-js-typecheck` | boolean | `false` | JS gate group (needs a `package-lock.json`). |
+| `enable-llm-review` | boolean | `false` | LLM judges after all deterministic gates; pull_request events only. |
+| `config-path` | string | `"config/factory.json"` | Judge config path relative to the caller repository root. |
+| `diff-exclude` | string | `""` | Space-separated git pathspecs excluded from the judge diff (e.g. `uv.lock package-lock.json`). |
+| `batch-budget-chars` | string | `""` (effective `200000`) | Per-batch character budget for splitting the judge diff. Raise it (e.g. `500000`) so large PRs are judged whole — small batches make judges report "tests missing" for files whose tests landed in another batch. |
+| `toolkit-ref` | string | `"v1.3.0"` | Ref of the Python-implementation checkout. Overrides are deliberate. |
+
+Secrets: `openrouter-api-key` (needed when `enable-llm-review` is on) and
+`judge-token` (optional) — see [Secrets](#secrets).
+
+### Micro-workflows
+
+| Workflow | Inputs (default) | Secrets |
+|---|---|---|
+| `lint.yml` | `python-version` `"3.12"` · `lint-paths` `"."` · `extra-pip-packages` `"none"` | — |
+| `test.yml` | `python-version` `"3.12"` · `cov-paths` `"."` · `coverage-floor` (required) · `extra-pip-packages` `"none"` · `prefetch-tree-sitter` `false` | — |
+| `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `enable-semgrep` `true` · `enable-pip-audit` `true` | — |
+| `secret-scan.yml` | `toolkit-ref` `"v1.3.0"` | — |
+| `diff-coverage.yml` | `toolkit-ref` `"v1.3.0"` · `coverage-artifact` `"coverage-json"` | — |
+| `llm-pr-review.yml` | `toolkit-ref` `"v1.3.0"` · `config-path` `"config/factory.json"` · `diff-exclude` `""` · `prefetch-tree-sitter` `false` · `batch-budget-chars` `""` | `openrouter-api-key` (required) · `judge-token` (optional) |
+| `js-test.yml`, `js-typecheck.yml`, `js-lint.yml` | `node-version` `"22"` | — |
+
 ## JavaScript / TypeScript gates
 
 `js-test.yml`, `js-typecheck.yml`, and `js-lint.yml` bring the
@@ -217,6 +274,34 @@ Node names are fixed by the toolkit: `syntax_lint`, `test_coverage`,
 Environment overrides (highest precedence): `SECURITY_MODEL` (per-node) >
 `AGENT_MODEL` (global) > `factory.json` > toolkit default.
 
+Judges also read the **caller's** `docs/context.md` and `docs/adr/*.md` (if
+present) as architecture context — your documented decisions directly shape
+the architecture verdict.
+
+### Review-run environment variables
+
+The workflows set these for you from the inputs above; when running
+`review.py` manually, set them directly.
+
+| Variable | Effect |
+|---|---|
+| `<NODE>_MODEL` (e.g. `SECURITY_MODEL`) | Per-node model override; highest precedence. |
+| `AGENT_MODEL` | Global model override (above `factory.json`, below per-node). |
+| `REVIEW_CONFIG_PATH` | Judge config path; set from `config-path` (default `config/factory.json`). |
+| `REVIEW_BATCH_BUDGET_CHARS` | Per-batch character budget for the judge diff; set from `batch-budget-chars` (effective default `200000`). |
+| `REVIEW_RETRY_BUDGET_SECONDS` | OpenRouter retry budget in seconds before the run gives up (default `2700` = 45 min; retries are 429/5xx-aware). |
+| `REVIEW_DEBUG` | Set to `1` to log request payloads and error bodies. |
+| `REVIEW_WORKSPACE_DIR` | Overrides the repository root the diff and docs context resolve against (default: `GITHUB_WORKSPACE/repo`). |
+| `AGENT_LOG_PATH` | Overrides the local JSONL trace-log location (CI default: `agent_logs/` under the runner workspace; `/tmp/agent_logs` fallback). |
+
+### Telemetry export (opt-in)
+
+With the OpenTelemetry SDK installed and `OTEL_EXPORTER_OTLP_ENDPOINT`
+(plus `OTEL_EXPORTER_OTLP_HEADERS` and/or `REVIEW_OTEL_API_KEY`) set, spans
+are exported to your backend; `REVIEW_OTEL_PROJECT_NAME` and
+`OTEL_SERVICE_NAME` label them. Without the SDK the tracer degrades to a
+no-op. Details: [docs/context.md](docs/context.md).
+
 ## Pre-commit hook
 
 ```yaml
@@ -233,6 +318,47 @@ repos:
 The JS hooks run full-project — not staged-scoped — so they require
 `node_modules` to be present in the consumer project (see
 [JavaScript / TypeScript gates](#javascript--typescript-gates)).
+
+## Troubleshooting
+
+- **The diff-coverage gate fails: "never imported by any test (absent from
+  report)"** — a newly added top-level package is not measured. Add it to
+  `cov-paths`; the gate judges only lines that appear in the coverage
+  report.
+- **mypy fails on every third-party import** — the caller project and its
+  dependency surface were not installed. Make the project pip-installable
+  and pass non-dev dependencies via `extra-pip-packages`; the lint
+  environment mirrors the test environment (`pip install -e ".[dev]"`).
+- **test job fails with a missing `pytest` or missing test imports** — your
+  `[dev]` extra is missing or incomplete; pip only *warns* about a missing
+  extra and installs the rest.
+- **Judges falsely report "tests missing" on a large PR** — the diff was
+  split into batches and the tests landed in a different batch than the
+  changed files. Raise `batch-budget-chars` (e.g. `500000`).
+- **Review job red, but the posted review carries no findings** — the judge
+  transport failed (typically OpenRouter HTTP 429). Retries consume
+  `REVIEW_RETRY_BUDGET_SECONDS` (default 45 min); rerun the failed job once
+  quota resets. A review *with* findings is a real verdict, not an outage.
+- **secret-scan false positive** — there is deliberately no inline
+  suppression (a consumer-side skip mechanism would weaken the scanner).
+  Token-shape fixes (e.g. the npm integrity-hash suppression, D-0010) ship
+  in the scanner itself — open an issue with the matched text shape.
+- **Lockfile churn dominates the judge diff** — pass
+  `diff-exclude: "uv.lock package-lock.json"`.
+
+## Consuming verdicts
+
+The posted review carries the hidden `llm-pr-review-verdicts` block — a
+versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
+(D-0002). For merge gating:
+
+- The review exits nonzero on any FAIL / NEEDS REVIEW verdict, so the red
+  check alone is a merge gate — make the check required in branch
+  protection. Check names derive from the caller's job ids and the called
+  workflow names; the toolkit's own `ci.yml` is a live example.
+- To automerge on verdicts, parse the hidden block (an HTML comment in the
+  review body). Verify the review author against a trusted judge identity —
+  the reason `judge-token` exists (see [Secrets](#secrets)).
 
 ## Versioning
 

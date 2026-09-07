@@ -1,6 +1,6 @@
 # Public pre-commit hook interface — this file makes the repository usable
-# as a remote pre-commit hook source (see README "Using as a pre-commit
-# hook"). `secret-scan` requires `language: python`, so the toolkit is
+# as a remote pre-commit hook source (see README "Pre-commit hook").
+# `secret-scan` requires `language: python`, so the toolkit is
 # pip-installable: pyproject.toml declares the build backend and the
 # `secret-scan` console script that pre-commit invokes inside its isolated
 # hook environment. The js-* hooks use `language: system` instead — they
