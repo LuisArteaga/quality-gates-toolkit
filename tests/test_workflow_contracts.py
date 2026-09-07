@@ -111,7 +111,7 @@ def test_composite_ships_neutral_public_defaults():
     assert inputs["lint-paths"]["default"] == "."
     assert inputs["cov-paths"]["default"] == "."
     assert inputs["extra-pip-packages"]["default"] == "none"
-    assert inputs["toolkit-ref"]["default"] == "v1.0.4"
+    assert inputs["toolkit-ref"]["default"] == "v1.1.0"
     assert inputs["config-path"]["default"] == "config/factory.json"
 
 
@@ -149,7 +149,7 @@ def test_every_toolkit_ref_input_defaults_to_the_release_tag():
         inputs = inputs.get("inputs") or {}
         if "toolkit-ref" not in inputs:
             continue
-        assert inputs["toolkit-ref"].get("default") == "v1.0.4", (
+        assert inputs["toolkit-ref"].get("default") == "v1.1.0", (
             f"{path.name}: toolkit-ref must default to the concrete release tag"
         )
 
