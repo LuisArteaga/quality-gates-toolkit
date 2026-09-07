@@ -171,6 +171,18 @@ def test_lint_job_installs_caller_dependencies_for_mypy():
     assert inputs["extra-pip-packages"]["default"] == "none"
 
 
+def test_test_job_install_is_strict_no_lint_style_fallback():
+    """D-0014: test.yml installs the caller strictly via the dev extra —
+    no lint-style runtime-only fallback. pytest comes from the caller's
+    [dev] extra, so a fallback could not rescue the job; it would only
+    move the failure site. Pins the documented lint/test asymmetry
+    against accidental alignment."""
+    raw = (WORKFLOWS / "test.yml").read_text()
+    assert "Install dependencies" in raw
+    assert "pip install -e .[dev]" in raw
+    assert "|| pip install -e ." not in raw
+
+
 def test_composite_forwards_extra_pip_packages_to_lint():
     jobs = _jobs(_load("pr-checks.yml"))
     assert jobs["lint"]["with"]["extra-pip-packages"] == (

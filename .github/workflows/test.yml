@@ -57,6 +57,9 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - name: Install dependencies
+        # Deliberately strict (D-0014): no lint-style `pip install -e .`
+        # fallback. pytest comes from the caller's [dev] extra, so a
+        # runtime-only fallback could not rescue the job.
         working-directory: repo
         run: |
           pip install --upgrade pip

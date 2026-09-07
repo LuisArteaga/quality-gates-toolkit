@@ -64,8 +64,9 @@ jobs:
         # enough either — lint-paths commonly includes tests/, which import
         # pytest/httpx and friends, so this mirrors the test.yml environment
         # (pip install -e .[dev]) exactly: mypy must see what pytest sees.
-        # Best-effort by contract: callers without build metadata (or without
-        # a dev extra) keep the previous lint-only behavior.
+        # Best-effort by contract (D-0014): callers without build metadata
+        # (or without a usable dev extra) keep a viable lint environment via
+        # the runtime-only fallback.
         working-directory: repo
         run: |
           pip install --upgrade pip
