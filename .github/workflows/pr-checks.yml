@@ -14,6 +14,14 @@ name: PR checks (composite)
 #    (llm-pr-review.yml fail-fasts on an empty PR number); on any other
 #    event the composite skips the judge job instead of failing.
 #
+# LANGUAGE CONTRACT (D-0013): the gate toggles are language-scoped. The
+# unprefixed toggles (enable-lint, enable-test, enable-security, ...) govern
+# the PYTHON gate group and default ON; the enable-js-* toggles govern the
+# JS gate group and default OFF — a Python caller upgrading the toolkit must
+# not suddenly need a package-lock.json, and a JS caller opts in explicitly.
+# The ordering policy (invariant 1) spans both groups: every enabled
+# deterministic gate precedes the LLM review job.
+#
 # Internal references are RELATIVE (./.github/workflows/...) so the nested
 # workflows resolve from the SAME commit/tag as this composite — no version
 # drift between pr-checks.yml@v1.2.0 and its micro-workflows. toolkit-ref only
@@ -22,7 +30,8 @@ name: PR checks (composite)
 # Defaults are deliberately NEUTRAL (public contract, not the origin
 # repository's config): repo-specific values belong in the caller. See
 # DECISIONS.md (D-0004 neutral defaults, D-0001 gate ordering, D-0011
-# PR-only review, D-0006 hybrid architecture).
+# PR-only review, D-0006 hybrid architecture, D-0012 JS harness contract,
+# D-0013 language contract).
 
 on:
   workflow_call:
@@ -31,6 +40,10 @@ on:
         description: Python version used by lint, test, and security.
         type: string
         default: "3.12"
+      node-version:
+        description: Node.js version used by the JS gates (js-lint, js-test, js-typecheck).
+        type: string
+        default: "22"
       lint-paths:
         description: Space-separated paths for ruff, mypy, and Semgrep.
         type: string
@@ -82,6 +95,18 @@ on:
         description: Enforce 100% changed-line coverage on pull_request events.
         type: boolean
         default: true
+      enable-js-lint:
+        description: Run the caller's `npm run lint` (js-lint.yml). JS gates default OFF — enabling one requires a package-lock.json in the caller root.
+        type: boolean
+        default: false
+      enable-js-test:
+        description: Run the caller's `npm test` (js-test.yml). JS gates default OFF — enabling one requires a package-lock.json in the caller root.
+        type: boolean
+        default: false
+      enable-js-typecheck:
+        description: Run the caller's `npm run typecheck` (js-typecheck.yml). JS gates default OFF — enabling one requires a package-lock.json in the caller root.
+        type: boolean
+        default: false
       enable-llm-review:
         description: Run the LLM judges after all deterministic gates are green.
         type: boolean
@@ -152,6 +177,30 @@ jobs:
       enable-semgrep: ${{ inputs.enable-semgrep }}
       enable-pip-audit: ${{ inputs.enable-pip-audit }}
 
+  js-lint:
+    if: inputs.enable-js-lint
+    uses: ./.github/workflows/js-lint.yml
+    permissions:
+      contents: read
+    with:
+      node-version: ${{ inputs.node-version }}
+
+  js-test:
+    if: inputs.enable-js-test
+    uses: ./.github/workflows/js-test.yml
+    permissions:
+      contents: read
+    with:
+      node-version: ${{ inputs.node-version }}
+
+  js-typecheck:
+    if: inputs.enable-js-typecheck
+    uses: ./.github/workflows/js-typecheck.yml
+    permissions:
+      contents: read
+    with:
+      node-version: ${{ inputs.node-version }}
+
   secretscan:
     if: inputs.enable-secret-scan
     uses: ./.github/workflows/secret-scan.yml
@@ -185,13 +234,16 @@ jobs:
     # fail-fasts on an empty PR number, so a caller triggered on other
     # events (e.g. push) skips this job instead of turning permanently
     # red on every run.
-    needs: [lint, test, security, secretscan, diffcoverage]
+    needs: [lint, test, security, js-lint, js-test, js-typecheck, secretscan, diffcoverage]
     if: >-
       ${{ inputs.enable-llm-review &&
           !cancelled() &&
           (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
           (needs.security.result == 'success' || needs.security.result == 'skipped') &&
+          (needs.js-lint.result == 'success' || needs.js-lint.result == 'skipped') &&
+          (needs.js-test.result == 'success' || needs.js-test.result == 'skipped') &&
+          (needs.js-typecheck.result == 'success' || needs.js-typecheck.result == 'skipped') &&
           (needs.secretscan.result == 'success' || needs.secretscan.result == 'skipped') &&
           (needs.diffcoverage.result == 'success' || needs.diffcoverage.result == 'skipped') &&
           github.event_name == 'pull_request' }}

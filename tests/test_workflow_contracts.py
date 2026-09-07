@@ -19,6 +19,10 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   handed from test.yml to diff-coverage.yml as an artifact.
 - D-0012 JS gates: the harness owns the environment, the project owns the
   tools — fixed npm script contracts, node-version as the only input.
+- D-0013 language contract: the composite's JS gate group (enable-js-*)
+  defaults OFF so existing Python callers are unaffected, and the cost gate
+  spans both language groups (every enabled deterministic gate precedes the
+  LLM review).
 """
 
 from pathlib import Path
@@ -114,6 +118,40 @@ def test_composite_ships_neutral_public_defaults():
     assert inputs["extra-pip-packages"]["default"] == "none"
     assert inputs["toolkit-ref"]["default"] == "v1.2.0"
     assert inputs["config-path"]["default"] == "config/factory.json"
+    assert inputs["node-version"]["default"] == "22"
+
+
+def test_composite_js_language_toggles_default_off():
+    """D-0013: the JS gate group must default OFF so a Python caller
+    upgrading the toolkit is unaffected (npm ci fails loudly without a
+    package-lock.json), while the Python toggles keep their ON defaults —
+    the backward-compatibility anchor of the language contract."""
+    inputs = _call_inputs(_load("pr-checks.yml"))
+    for name in ("enable-js-lint", "enable-js-test", "enable-js-typecheck"):
+        toggle = inputs[name]
+        assert toggle.get("type") == "boolean", name
+        assert toggle.get("default") is False, (
+            f"{name} must default to false (existing callers must be unaffected)"
+        )
+    for name in ("enable-lint", "enable-test", "enable-security", "enable-secret-scan"):
+        assert inputs[name].get("default") is True, (
+            f"{name} must keep its ON default (backward compatibility)"
+        )
+
+
+def test_composite_js_jobs_call_the_js_micro_workflows():
+    jobs = _jobs(_load("pr-checks.yml"))
+    expected = {
+        "js-lint": ("./.github/workflows/js-lint.yml", "enable-js-lint"),
+        "js-test": ("./.github/workflows/js-test.yml", "enable-js-test"),
+        "js-typecheck": ("./.github/workflows/js-typecheck.yml", "enable-js-typecheck"),
+    }
+    for job_id, (ref, toggle) in expected.items():
+        job = jobs[job_id]
+        assert job["uses"] == ref, job_id
+        assert job["if"] == f"inputs.{toggle}", job_id
+        assert job["permissions"] == {"contents": "read"}, job_id
+        assert job["with"]["node-version"] == "${{ inputs.node-version }}", job_id
 
 
 def test_lint_job_installs_caller_dependencies_for_mypy():
@@ -181,6 +219,9 @@ def test_llm_review_requires_all_deterministic_gates():
         "lint",
         "test",
         "security",
+        "js-lint",
+        "js-test",
+        "js-typecheck",
         "secretscan",
         "diffcoverage",
     }
@@ -188,10 +229,21 @@ def test_llm_review_requires_all_deterministic_gates():
 
 def test_llm_review_cost_gate_tolerates_only_skipped_gates():
     """The if-expression must demand success from every gate while allowing
-    explicitly disabled gates (skipped) — never always()-style fallbacks."""
+    explicitly disabled gates (skipped) — never always()-style fallbacks.
+    D-0013: the policy spans both language groups."""
     jobs = _jobs(_load("pr-checks.yml"))
     condition = jobs["llmreview"]["if"]
-    for gate in ("lint", "test", "security", "secretscan", "diffcoverage"):
+    gates = (
+        "lint",
+        "test",
+        "security",
+        "js-lint",
+        "js-test",
+        "js-typecheck",
+        "secretscan",
+        "diffcoverage",
+    )
+    for gate in gates:
         assert f"needs.{gate}.result == 'success'" in condition, gate
         assert f"needs.{gate}.result == 'skipped'" in condition, gate
     assert "inputs.enable-llm-review" in condition

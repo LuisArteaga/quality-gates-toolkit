@@ -14,7 +14,7 @@ this public repository at a pinned ref (`toolkit-ref`).
 
 | Workflow | Purpose |
 |---|---|
-| `pr-checks.yml` | **Opinionated composite entry point.** Orchestrates all gates as jobs and centrally enforces the ordering policy (deterministic gates before LLM review — the cost gate). |
+| `pr-checks.yml` | **Opinionated composite entry point.** Orchestrates all gates as jobs and centrally enforces the ordering policy (deterministic gates before LLM review — the cost gate). Language-scoped toggles (D-0013): Python gates on by default, JS gates opt-in. |
 | `lint.yml` | ruff lint + format check + mypy with toolkit-pinned tool versions. Installs the caller project (`pip install -e .`, best-effort) plus `extra-pip-packages` first, so mypy sees the caller's dependency surface. |
 | `test.yml` | pytest with coverage, floor enforcement (`coverage-floor` is required), uploads `coverage.json` as an artifact. |
 | `diff-coverage.yml` | 100% changed-line coverage gate (consumes the coverage artifact; PR events only). |
@@ -58,6 +58,44 @@ permissions:
 
 A nested reusable workflow can narrow but never elevate the caller's token
 scope.
+
+### Language toggles
+
+The composite's gate toggles are language-scoped (D-0013):
+
+- **Python gate group** — the unprefixed toggles (`enable-lint`,
+  `enable-test`, `enable-security`, `enable-secret-scan`,
+  `enable-diff-gate`, plus the security sub-toggles) default **ON**.
+- **JS gate group** — `enable-js-lint`, `enable-js-test`,
+  `enable-js-typecheck` default **OFF**: the JS harness is npm-only and
+  fails loudly without a `package-lock.json` in the repository root
+  (D-0012), so a Python-only caller must never need one.
+- `node-version` (default `22`) feeds all three JS jobs, mirroring how
+  `python-version` feeds the Python gates.
+
+The ordering policy spans both groups: the LLM review runs only after
+every **enabled** deterministic gate is green. A JS-only caller disables
+the Python gates and opts in explicitly:
+
+```yaml
+jobs:
+  quality:
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.2.0
+    with:
+      coverage-floor: 0          # nominal — Python test gate disabled below
+      enable-lint: false
+      enable-test: false
+      enable-security: false
+      enable-diff-gate: false
+      enable-js-test: true
+      enable-js-typecheck: true
+      enable-js-lint: true
+```
+
+`coverage-floor` remains a required input even for JS-only callers —
+`workflow_call` cannot express conditionally-required inputs, and the
+policy contract should not weaken silently; pass a nominal `0` when the
+Python test gate is off. `secret-scan` is language-agnostic and stays on.
 
 ## Secrets
 
@@ -155,7 +193,9 @@ jobs:
 ```
 
 The same scripts also ship as pre-commit hooks (`js-test`, `js-typecheck`,
-`js-lint`) — see below.
+`js-lint`) — see below. Composite consumers don't wire these workflows by
+hand: `pr-checks.yml` orchestrates them via the `enable-js-*` toggles (see
+[Language toggles](#language-toggles)).
 
 ## Judge configuration
 
