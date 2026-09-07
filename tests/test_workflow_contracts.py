@@ -436,7 +436,7 @@ def test_micro_workflows_use_least_privilege_permissions():
 
 
 # ---------------------------------------------------------------------------
-# Public pre-commit hook interface (README "Using as a pre-commit hook")
+# Public pre-commit hook interface (README "Pre-commit hook")
 # ---------------------------------------------------------------------------
 
 
