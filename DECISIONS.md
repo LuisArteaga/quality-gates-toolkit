@@ -93,7 +93,12 @@ behavior explicitly in their caller files.
 
 ### Amendments
 
-None.
+- 2026-09-08: "Deterministic gates ON" is scoped by the language contract
+  (D-0013): it applies to the Python gate group. The JS gate group
+  (`enable-js-*`) defaults OFF — enabling it requires a `package-lock.json`
+  in the caller root (D-0012), so defaulting it ON would break every
+  Python-only caller on upgrade. Opting in is the JS consumer's deliberate
+  act.
 
 ## D-0005 — Optional judge token, trusted-identity boundary
 
@@ -314,8 +319,8 @@ D-0009's scope minimalism: pnpm/yarn can be added later as additive
 mis-chosen default package manager would break every caller from day one.
 The new workflows take no `toolkit-ref`: like `lint.yml`, they run no
 Python implementation checkout. Deferred by the same scope rule: JS
-diff-coverage (needs a cobertura artifact design) and composite language
-toggles.
+diff-coverage (needs a cobertura artifact design); composite language
+toggles shipped as D-0013.
 
 ### Amendments
 
@@ -325,3 +330,46 @@ toggles.
   holds: the gate becomes runtime-verifiable once the first npm consumer
   adopts ESLint with a `lint` script; until then its contract is enforced
   statically by the workflow contract tests.
+- 2026-09-08: The deferred composite language toggles ship as D-0013 —
+  the micro-workflow harness contract itself is unchanged; the composite
+  gains `enable-js-*` toggles (default OFF) that call these workflows.
+
+## D-0013 — Composite language contract
+
+- Date: 2026-09-08
+- Status: Accepted
+
+### Decision
+
+The composite's gate toggles are language-scoped. The pre-existing
+unprefixed toggles (`enable-lint`, `enable-test`, `enable-security`,
+`enable-secret-scan`, `enable-diff-gate`, plus the security sub-toggles)
+govern the **Python gate group** and keep their ON defaults. The JS gate
+group is controlled by three new toggles — `enable-js-lint`,
+`enable-js-test`, `enable-js-typecheck` — which default **OFF**. A
+composite-level `node-version` input (default `22`) is forwarded to all
+three JS jobs, mirroring how `python-version` feeds the Python gates. The
+D-0001 ordering policy spans both groups: the LLM review runs only after
+every enabled deterministic gate of either language is green.
+
+### Rationale
+
+Renaming the unprefixed toggles to `enable-python-*` (the shape sketched in
+the originating issue, "naming TBD") would be an incompatible contract
+change — GitHub declares no input aliases, so every caller passing the old
+names would fail validation — and per this file's header such a change
+requires a new major ref. Keeping the historical names and adding an
+explicitly language-prefixed JS group preserves every existing caller
+byte-for-byte. The JS defaults are OFF because the JS harness fails loudly
+without a `package-lock.json` (D-0012): defaulting ON would turn every
+Python-only caller red on its next toolkit bump, violating the
+backward-compatibility requirement. As with the ESLint gate (D-0012
+amendment), the Python-only toolkit repository cannot runtime-exercise
+`npm ci` gates; the JS micro-workflows are byte-unchanged by this decision,
+so the composite's JS path takes its first runtime canary when the first
+consumer enables the toggles — until then the contract is enforced
+statically by the workflow contract tests.
+
+### Amendments
+
+None.
