@@ -373,3 +373,43 @@ statically by the workflow contract tests.
 ### Amendments
 
 None.
+
+## D-0014 — Python install contract: lint is best-effort, test is strict
+
+- Date: 2026-09-08
+- Status: Accepted
+
+### Decision
+
+The two Python gates install the caller project with deliberately
+different fallback behavior:
+
+- `lint.yml` installs `pip install -e ".[dev]" || pip install -e .`. The
+  fallback keeps lint working when the `[dev]` extra is absent or
+  unresolvable: the lint toolchain (ruff, mypy) is installed by the
+  toolkit itself, so a runtime-only caller install still yields a viable
+  mypy environment.
+- `test.yml` installs `pip install -e ".[dev]"` with no fallback. pytest
+  is not toolkit-provided — it must come from the caller's `[dev]` extra,
+  so a runtime-only fallback cannot rescue the job.
+
+This records lint.yml's existing behavior as public contract; it is
+pinned by workflow contract tests and documented in the README's Caller
+prerequisites section.
+
+### Rationale
+
+Mirroring lint's fallback into test.yml would be dead code: pip treats a
+missing `[dev]` extra as a warning and exits successfully either way
+(verified: `pip install --dry-run -e ".[does-not-exist]"` → warning,
+exit 0), so both shapes fail later at the pytest step — the fallback
+would change the failure site, not the outcome. Removing lint's fallback
+would hard-fail lint-only callers whose dev extra is broken, for no
+benefit: lint's own tools are toolkit-pinned and the runtime install
+supplies mypy's dependency surface. The asymmetry tracks toolchain
+ownership — each gate installs exactly what the caller must provide for
+it.
+
+### Amendments
+
+None.

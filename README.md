@@ -15,8 +15,8 @@ this public repository at a pinned ref (`toolkit-ref`).
 | Workflow | Purpose |
 |---|---|
 | `pr-checks.yml` | **Opinionated composite entry point.** Orchestrates all gates as jobs and centrally enforces the ordering policy (deterministic gates before LLM review — the cost gate). Language-scoped toggles (D-0013): Python gates on by default, JS gates opt-in. |
-| `lint.yml` | ruff lint + format check + mypy with toolkit-pinned tool versions. Installs the caller project (`pip install -e .`, best-effort) plus `extra-pip-packages` first, so mypy sees the caller's dependency surface. |
-| `test.yml` | pytest with coverage, floor enforcement (`coverage-floor` is required), uploads `coverage.json` as an artifact. |
+| `lint.yml` | ruff lint + format check + mypy with toolkit-pinned tool versions. Installs the caller project (`pip install -e ".[dev]" || pip install -e .`, best-effort) plus `extra-pip-packages` first, so mypy sees the caller's dependency surface. |
+| `test.yml` | pytest with coverage, floor enforcement (`coverage-floor` is required), uploads `coverage.json` as an artifact. Installs the caller via `pip install -e ".[dev]"` — strict, no fallback (D-0014): pytest comes from the caller's dev extra. |
 | `diff-coverage.yml` | 100% changed-line coverage gate (consumes the coverage artifact; PR events only). |
 | `security.yml` | Semgrep + pip-audit. |
 | `secret-scan.yml` | The toolkit's own stdlib secret scanner over all tracked files. Best-effort regex detection — not a Gitleaks replacement; pair it with Gitleaks for defense in depth if you want broader coverage. |
@@ -39,11 +39,19 @@ enrichment and degrades gracefully without it.
 gates still expect the *caller* project to be self-contained:
 
 - **Python repos:** pip-installable (`pyproject.toml`, `setup.py`, or
-  `setup.cfg`). The lint gate installs the caller best-effort
-  (`pip install -e ".[dev]" || pip install -e .`); the test gate installs
-  `.[dev]` and then runs pytest. pip treats a missing `[dev]` extra as a
-  warning, so the failure surfaces later as a missing pytest or missing
-  test imports — declare a `[dev]` extra with your test toolchain.
+  `setup.cfg`). The two Python gates install the caller differently, and
+  the asymmetry is deliberate (D-0014):
+  - **lint** installs `pip install -e ".[dev]" || pip install -e .` — if
+    the `[dev]` extra is absent or unresolvable it falls back to a
+    runtime-only install so mypy still sees your dependency surface. A
+    caller without `[dev]` passes lint only while the linted code imports
+    nothing beyond runtime dependencies (pytest imports in linted test
+    code still fail mypy).
+  - **test** installs `pip install -e ".[dev]"` with no fallback —
+    pytest comes from your `[dev]` extra, so a caller without one warns
+    at install time and fails at the pytest step.
+  Declare a `[dev]` extra containing your test toolchain to make both
+  gates green. pip treats a missing extra as a warning, not an error.
 - **JS repos:** `package-lock.json` in the repository root plus the fixed
   script contracts (`test`, `typecheck`, `lint`) in `package.json` — see
   [JavaScript / TypeScript gates](#javascript--typescript-gates).
