@@ -28,3 +28,6 @@ htmlcov/
 
 # uv (toolkit CI installs via pip; no lockfile contract yet)
 uv.lock
+
+# Machine-local agent working memory; never committed.
+.deepagents/
