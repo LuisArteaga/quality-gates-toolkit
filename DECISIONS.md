@@ -451,6 +451,14 @@ resolution (golden contract tests pin the shipped example config's
 resolution, and the review body / verdict block is independent of config
 sourcing), so the change is purely additive and needs no major ref.
 
+The optional `judges-section` declaration key ships deliberately despite
+having no current consumer with non-standard section names: it is part of
+this decision's contract (issue #24's design), and contract keys are
+cheapest to introduce while the nested-resolution contract is young —
+before external consumers accumulate and a later addition becomes another
+additive release nobody asked for. Removing it later would be the 1.x
+deprecation path, not this.
+
 ### Amendments
 
 None.

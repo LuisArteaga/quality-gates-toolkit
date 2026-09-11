@@ -95,9 +95,7 @@ def _declared_judges_sections(factory: dict[str, Any]) -> list[str]:
     return []
 
 
-def _nested_section_candidates(
-    declared: list[str], factory: dict[str, Any]
-) -> list[str]:
+def _nested_section_candidates(declared: list[str]) -> list[str]:
     """Ordered nested-section scan list: declared sections first (consumer
     intent), then the built-in defaults; deduplicated, order preserved."""
     candidates: list[str] = []
@@ -129,7 +127,7 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
     # first section holding the node wins.
     source_section: str | None = None
     if factory_cfg is None and isinstance(factory, dict):
-        for section in _nested_section_candidates(declared, factory):
+        for section in _nested_section_candidates(declared):
             section_data = factory.get(section)
             if not isinstance(section_data, dict):
                 continue

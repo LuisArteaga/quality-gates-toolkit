@@ -189,7 +189,10 @@ class TestConfigPathResolution:
 
 
 # Real-world nested consumer: agentic-planner-core's config/factory.json
-# (first consumer of the nested-section fallback). Verbatim structure.
+# (first consumer of the nested-section fallback). Embedded verbatim on
+# purpose — the issue prescribes the real config as fixture, and the
+# boundedness test below needs realistic non-judge sections (with node names
+# that must NOT resolve) to pin the bounded-scan contract.
 PLANNER_FACTORY: dict = {
     "factory_version": "2026.2.0",
     "cli_orchestration": {
