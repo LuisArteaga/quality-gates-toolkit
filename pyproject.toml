@@ -1,6 +1,9 @@
 [project]
 name = "quality-gates-toolkit"
-version = "1.0.0"
+# Tracks the release train (annotated tags vX.Y.Z). v1.5.0 is already
+# claimed by the pending post-PR-#29 release, so the release shipping the
+# importable judge package (D-0017) is v1.6.0.
+version = "1.6.0"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,8 +21,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-# The single shipped package: scripts/ (each gate is a module in it).
-packages = ["scripts"]
+# Two shipped packages: quality_gates_toolkit/ (the importable judge
+# implementation, D-0017) and scripts/ (the console-script package —
+# `secret-scan` — plus backward-compatibility shims for the moved modules).
+packages = ["quality_gates_toolkit", "scripts"]
 
 [project.optional-dependencies]
 # Runtime dependency of scripts/enrichment.py (enclosing-function-context

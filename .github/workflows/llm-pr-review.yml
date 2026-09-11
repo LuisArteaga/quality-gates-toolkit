@@ -1,9 +1,14 @@
 name: LLM PR review (reusable)
 
-# Micro-workflow: runs the toolkit's PR Review Judges (scripts/review.py) on
-# a pull request and posts the combined review carrying the hidden
+# Micro-workflow: runs the toolkit's PR Review Judges on a pull request's
+# diff and posts the combined review carrying the hidden
 # `llm-pr-review-verdicts` block. That block format is a versioned public
 # contract of this toolkit (see DECISIONS.md, D-0002).
+#
+# The executed file is the scripts/review.py backward-compatibility shim
+# (D-0017): direct execution cannot target quality_gates_toolkit/review.py
+# itself (relative imports need package context), so the shim loads the
+# implementation from the toolkit checkout and dispatches to its main().
 #
 # Design notes:
 # - The toolkit checkout is PUBLIC — no PAT is needed for it; the caller's

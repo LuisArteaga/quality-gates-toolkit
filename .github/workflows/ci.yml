@@ -32,8 +32,11 @@ jobs:
     uses: ./.github/workflows/pr-checks.yml
     with:
       python-version: "3.12"
-      lint-paths: "scripts"
-      cov-paths: "scripts"
+      # D-0017: the judge implementation moved to the importable
+      # quality_gates_toolkit package; the self-check must cover both
+      # packages (scripts/ keeps the console script + compat shims).
+      lint-paths: "scripts quality_gates_toolkit"
+      cov-paths: "scripts quality_gates_toolkit"
       coverage-floor: 80
       # Bootstrap carve-out (D-0008): ported tooling predates changed-line
       # coverage discipline; total-coverage floor stays ON. Re-enable per
