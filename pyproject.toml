@@ -1,8 +1,9 @@
 [project]
 name = "quality-gates-toolkit"
-# Tracks the release train (annotated tags vX.Y.Z). v1.5.0 is already
-# claimed by the pending post-PR-#29 release, so the release shipping the
-# importable judge package (D-0017) is v1.6.0.
+# Tracks the release train (annotated tags vX.Y.Z); bump together with the
+# toolkit-ref pin sites in each release PR. 1.6.0 is the combined release
+# carrying the local Python tool hooks (PR #29) and the importable judge
+# package (D-0017, PR #30) — v1.5.0 was never cut, so it is skipped.
 version = "1.6.0"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
