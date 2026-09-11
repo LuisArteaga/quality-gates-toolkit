@@ -435,6 +435,17 @@ def test_ci_dogfoods_same_commit_not_published_tag():
     assert "coverage-floor" in with_
 
 
+def test_self_check_lints_and_measures_the_judge_package():
+    """D-0017: ruff/mypy/coverage run against the importable package too —
+    the judge implementation left scripts/, so a scripts-only self-check
+    would leave the moved code unlinted and unmeasured."""
+    with_ = _jobs(_load("ci.yml"))["quality"]["with"]
+    for key in ("lint-paths", "cov-paths"):
+        paths = str(with_[key]).split()
+        assert "quality_gates_toolkit" in paths, f"ci.yml {key} must cover the package"
+        assert "scripts" in paths, f"ci.yml {key} must keep covering scripts/"
+
+
 def test_micro_workflows_use_least_privilege_permissions():
     for name in MICRO_WORKFLOWS:
         if name == "llm-pr-review.yml":
@@ -530,3 +541,9 @@ def test_pyproject_is_installable_and_exposes_secret_scan_script():
     # The hook entry point must resolve to a real console script.
     assert data["project"]["scripts"]["secret-scan"] == "scripts.secret_scan:main"
     assert "scripts" in data["tool"]["setuptools"]["packages"]
+    # D-0017: the importable judge package ships in the same distribution.
+    assert "quality_gates_toolkit" in data["tool"]["setuptools"]["packages"]
+    # The version field tracks the release train (annotated tags vX.Y.Z):
+    # bump it together with the toolkit-ref pin sites in the release PR.
+    # Mirrors the hardcoded-tag discipline of the toolkit-ref contract test.
+    assert data["project"]["version"] == "1.6.0"

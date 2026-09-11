@@ -514,3 +514,57 @@ envs eliminate for the self-contained tools.
 ### Amendments
 
 None.
+
+## D-0017 — The judge API ships as the importable `quality_gates_toolkit` package
+
+- Date: 2026-09-11
+- Status: Accepted
+
+### Decision
+
+The judge engine and its dependency closure (`review.py`, `telemetry.py`,
+`judge_config.py`, `redaction.py`, `enrichment.py`) move from the top-level
+`scripts` package to a new importable package named after the distribution,
+`quality_gates_toolkit`, with package-relative imports and no `scripts.*`
+imports anywhere inside it. The `scripts` package shrinks to its original
+purpose — the console-script home (`secret-scan` entry point,
+`diff_coverage_gate.py`, `secret_scan.py`) — plus five backward-compatibility
+shims that replace themselves in `sys.modules` with
+the moved implementation modules. The shim guarantees identity, not
+re-exported copies: flat imports (`import review`), qualified imports
+(`from scripts.review import ...`), direct execution
+(`python3 scripts/review.py`, the llm-pr-review invocation), and
+`mock.patch("review.<name>")` targets all bind the same module object.
+Consumers calibrate against `quality_gates_toolkit.review`; the public
+judge-prompt literals live in exactly one place. `pyproject.toml` ships
+both packages and its version field now tracks the release train (bumped
+together with the toolkit-ref pin sites in each release PR; the field
+previously stayed at 1.0.0 while tags advanced to v1.4.0).
+
+### Rationale
+
+Cross-repo consumers cannot use the judge engine as-is: both this toolkit
+and consumers (e.g. agentic-planner-core) ship a top-level package named
+`scripts`, so pip-installing this distribution and importing
+`scripts.review` would resolve the consumer's own package — a pip
+dependency is unusable, and the workaround (vendoring a snapshot of
+`review.py`) silently drifts from what CI actually runs. Moving the judge
+closure under a distribution-named package removes the collision at the
+root: package-relative imports mean the implementation never resolves
+through the `scripts` name, so a consumer's local `scripts/` package is
+irrelevant to it. The whole closure moves (not just the four prompt
+constants) because a partial extraction would still drag `scripts.*`
+imports into the consumer's import graph. A narrower namespace (`qg_judge`)
+was rejected: the API is the toolkit's Python implementation, not a
+separate distribution, and the distribution-named package avoids inventing
+a second public brand. The shim form was chosen over an explicit
+re-export list because re-export copies break `mock.patch` — patching the
+shim's attribute would not reach the implementation's callers — and would
+drift with every new private name; `sys.modules` self-replacement is
+honored by CPython's import machinery (the final `sys.modules` entry wins
+after `exec_module`, and the parent package attribute is set from it),
+which is the same mechanism Pillow uses to keep `import PIL` working.
+
+### Amendments
+
+None.

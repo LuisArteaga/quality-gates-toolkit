@@ -25,13 +25,18 @@ this public repository at a pinned ref (`toolkit-ref`).
 | `js-typecheck.yml` | Runs the caller's `npm run typecheck` under the same JS harness contract. |
 | `js-lint.yml` | Runs the caller's `npm run lint` under the same JS harness contract. |
 
-### Python tooling (`scripts/`)
+### Python tooling (`scripts/` + `quality_gates_toolkit/`)
 
-`review.py` (judge engine), `diff_coverage_gate.py`, `secret_scan.py`,
-plus internal modules (`judge_config.py`, `telemetry.py`, `redaction.py`,
-`enrichment.py`). `enrichment.py` optionally uses
-`tree-sitter-language-pack` (dev extra) for enclosing-function-context
-enrichment and degrades gracefully without it.
+The importable `quality_gates_toolkit` package is the judge-engine
+implementation (`review.py` plus support modules `judge_config.py`,
+`telemetry.py`, `redaction.py`, `enrichment.py`) — see
+[Importable judge API](#importable-judge-api). The `scripts` package keeps
+the standalone tools `diff_coverage_gate.py` and `secret_scan.py` (the
+console script behind the `secret-scan` pre-commit hook) plus
+backward-compatibility shims for the moved modules (D-0017).
+`enrichment.py` optionally uses `tree-sitter-language-pack` (dev extra)
+for enclosing-function-context enrichment and degrades gracefully without
+it.
 
 ## Caller prerequisites
 
@@ -333,6 +338,45 @@ are exported to your backend; `REVIEW_OTEL_PROJECT_NAME` and
 `OTEL_SERVICE_NAME` label them. Without the SDK the tracer degrades to a
 no-op. Details: [docs/context.md](docs/context.md).
 
+## Importable judge API
+
+The judge engine is an installable Python package
+(`quality_gates_toolkit`, D-0017) — available from release v1.6.0 — so a
+repo can calibrate its own evaluation tooling against exactly the code the
+CI judges run, instead of vendoring a `review.py` snapshot that silently
+drifts:
+
+```bash
+pip install "quality-gates-toolkit @ git+https://github.com/LuisArteaga/quality-gates-toolkit.git@v1.6.0"
+```
+
+```python
+from quality_gates_toolkit.review import (
+    SYSTEM_PROMPT_ARCH,
+    SYSTEM_PROMPT_SECURITY,
+    SYSTEM_PROMPT_SYNTAX_LINT,
+    SYSTEM_PROMPT_TEST_COVERAGE,
+    evaluate_response,
+    load_architecture_context,
+)
+```
+
+`evaluate_response` implements the hidden verdict-block protocol (D-0002, a
+versioned public contract); `load_architecture_context` reads the same
+`docs/context.md` / `docs/adr/*.md` context CI judges use. Support modules
+(`telemetry`, `judge_config`, `redaction`, `enrichment`) live in the same
+package; the judge-config resolution and env-var overrides documented above
+apply identically when you drive the API directly.
+
+**Why not `from scripts.review import ...`?** Both this toolkit and many
+consumer repos ship a top-level `scripts` package, so an installed
+`scripts.review` would be shadowed by the consumer's own package — the
+distribution-named package is the collision-free import surface (D-0017).
+`scripts` remains the console-script package (`secret-scan`) and carries
+backward-compatibility shims that alias the moved modules; existing
+`import review` / `from scripts.review import ...` code keeps working, but
+new code should import from `quality_gates_toolkit`.
+
 ## Pre-commit hook
 
 ```yaml
@@ -426,6 +470,9 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 - `uses:` pins an immutable release tag (e.g. `@v1.4.0`); `toolkit-ref`
   (default = that same tag) selects the Python implementation checkout.
   Overrides are deliberate.
+- The `pyproject.toml` version field tracks the same release train (bumped
+  together with the toolkit-ref pin sites in each release PR) and names the
+  tag pip consumers install for the [importable judge API](#importable-judge-api).
 - Public contracts (verdict-block format, gate ordering, routing modes,
   defaults) are recorded in [`DECISIONS.md`](DECISIONS.md) and only change
   with a new major ref.
