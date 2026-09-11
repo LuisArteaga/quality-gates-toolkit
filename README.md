@@ -341,14 +341,44 @@ repos:
     rev: v1.4.0            # pin a tag
     hooks:
       - id: secret-scan    # --staged scan of your staged changes
+      - id: mypy           # runs YOUR environment's mypy (advisory)
+      - id: semgrep        # pinned semgrep scan, isolated env
+      - id: pip-audit      # pinned pip-audit, isolated env
       - id: js-typecheck   # full-project `npm run typecheck` (needs node_modules)
       - id: js-test        # full-project `npm test` (needs node_modules)
       - id: js-lint        # full-project `npm run lint` (needs node_modules)
 ```
 
-The JS hooks run full-project — not staged-scoped — so they require
-`node_modules` to be present in the consumer project (see
-[JavaScript / TypeScript gates](#javascript--typescript-gates)).
+Hook ownership split (D-0016) — version ownership follows dependency need:
+
+| Hook | Language | Version ownership | Contract |
+|---|---|---|---|
+| `secret-scan` | `python` | toolkit-pinned | stdlib scanner in the isolated hook env; no consumer venv needed. |
+| `mypy` | `system` | consumer-owned | runs `mypy` from your project environment; pass target paths via `args` (e.g. `args: ["src/"]`). |
+| `semgrep` | `python` | toolkit-pinned (`semgrep==1.177.0`) | `semgrep scan`; supply `--config` and paths via `args`. |
+| `pip-audit` | `python` | toolkit-pinned (`pip-audit==2.10.1`) | supply arguments via `args` (e.g. `-r requirements.txt`). |
+| `js-typecheck` / `js-test` / `js-lint` | `system` | consumer-owned | fixed npm scripts, full-project (see [JavaScript / TypeScript gates](#javascript--typescript-gates)). |
+
+`language: python` hooks run in pre-commit's isolated environment with the
+toolkit's pinned versions — the local mirror of the CI `lint.yml` pin
+discipline; pin bumps ship as new toolkit releases. They also pin the env
+interpreter (`language_version: python3.12`, the toolkit's floor): a bare
+pre-commit installed under an older Python otherwise fails the env install
+with `requires a different Python`. `mypy` is deliberately
+`language: system`: type checking needs your project's dependency surface,
+and an isolated environment would fail on every third-party import — the
+same reason the js-* hooks run `npm` from your environment.
+
+Two loud-fail paths to expect:
+
+- **mypy hook errors before running** — your project environment lacks
+  mypy (or isn't active). Install mypy plus your dependency surface there;
+  remember the local hook is **advisory**: your local mypy version may
+  differ from the CI pin, and `lint.yml`'s pinned mypy (2.3.1) remains the
+  merge-gating authority.
+- **pip-audit reports nothing** — bare `pip-audit` audits the (empty) hook
+  environment, not your project. Pass explicit arguments, e.g.
+  `args: ["-r", "requirements.txt"]`.
 
 ## Troubleshooting
 

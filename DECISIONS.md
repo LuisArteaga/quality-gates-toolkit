@@ -462,3 +462,55 @@ deprecation path, not this.
 ### Amendments
 
 None.
+
+## D-0016 — Local Python hook ownership split
+
+- Date: 2026-09-11
+- Status: Accepted
+
+### Decision
+
+The toolkit's local (pre-commit) hooks split by version ownership, which
+follows the tool's dependency need:
+
+- `language: python` — tools with no dependency on the consumer project
+  run in pre-commit's isolated environment at toolkit-pinned versions:
+  `secret-scan` (console script from this package, existing) plus new
+  `semgrep` (`semgrep==1.177.0`, entry `semgrep scan`) and `pip-audit`
+  (`pip-audit==2.10.1`, entry `pip-audit`). Pin bumps ship as new toolkit
+  releases, never on a floating ref. These hooks also pin the env
+  interpreter with `language_version: python3.12` (the package's floor):
+  pre-commit otherwise builds the isolated env with the interpreter it
+  itself runs under, which can be older and would fail the env install
+  with `requires a different Python` (observed with a uv-managed
+  pre-commit running under 3.11).
+- `language: system` — tools that must see the consumer project's own
+  dependency surface run from the consumer's environment at consumer-owned
+  versions: the `js-*` npm hooks (existing) plus new `mypy` (entry `mypy`,
+  consumer passes target paths via its own `args`). Local mypy is
+  **advisory**; the CI `lint.yml` pin (mypy 2.3.1) stays authoritative.
+- `ruff` ships no hook: the upstream `astral-sh/ruff-pre-commit` hook is
+  canonical and fast-moving; consumers keep using it directly and pin its
+  rev to match their CI.
+
+### Rationale
+
+pre-commit's `language: python` builds an isolated environment that does
+not see the consumer's installed dependencies — a toolkit-pinned mypy
+there would fail on every third-party import, the same failure class that
+keeps the `js-*` hooks on `language: system` (ESLint in an isolated env
+cannot see project plugins). Conversely, dependency-free scanners gain
+exactly the consistency the CI side already promises ("a consistent,
+known-good toolchain per toolkit-ref") with zero consumer setup. The split
+generalizes D-0012's "the harness owns the environment, the project owns
+the tools" from a JS-only rule to a dependency-need rule: the toolkit pins
+what is self-contained, the consumer owns what needs its project. The
+advisory/authoritative split for mypy keeps one source of merge-gating
+truth (CI) while local hooks give fast feedback. The observed consumer
+skew this guards against (a consumer pinning ruff-pre-commit v0.3.0
+against toolkit CI's ruff 0.16.6) is the failure class the pinned isolated
+envs eliminate for the self-contained tools.
+
+### Amendments
+
+None.

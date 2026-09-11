@@ -462,6 +462,7 @@ def test_pre_commit_hooks_file_declares_secret_scan():
     assert hook is not None, "hook id 'secret-scan' must exist (README quick start)"
     assert hook.get("entry") == "secret-scan"
     assert hook.get("language") == "python"
+    assert hook.get("language_version") == "python3.12"
     assert hook.get("pass_filenames") is False
     assert hook.get("always_run") is True
 
@@ -482,6 +483,36 @@ def test_pre_commit_hooks_declare_js_gates():
         assert hook is not None, f"hook id '{hook_id}' must exist (D-0012)"
         assert hook.get("entry") == entry
         assert hook.get("language") == "system"
+        assert hook.get("pass_filenames") is False
+        assert hook.get("always_run") is True
+
+
+def test_pre_commit_hooks_declare_python_tool_hooks():
+    """D-0016: the Python tool hooks split by version ownership — mypy runs
+    from the consumer environment (system, advisory), semgrep/pip-audit run
+    in pre-commit's isolated env at toolkit-pinned versions."""
+    hooks_path = WORKFLOWS.parent.parent / ".pre-commit-hooks.yaml"
+    with hooks_path.open() as f:
+        hooks = yaml.safe_load(f)
+    mypy_hook = next((h for h in hooks if h.get("id") == "mypy"), None)
+    assert mypy_hook is not None, "hook id 'mypy' must exist (D-0016)"
+    assert mypy_hook.get("entry") == "mypy"
+    assert mypy_hook.get("language") == "system"
+    assert mypy_hook.get("pass_filenames") is False
+    assert mypy_hook.get("always_run") is True
+    pinned = {
+        "semgrep": ("semgrep scan", ["semgrep==1.177.0"]),
+        "pip-audit": ("pip-audit", ["pip-audit==2.10.1"]),
+    }
+    for hook_id, (entry, deps) in pinned.items():
+        hook = next((h for h in hooks if h.get("id") == hook_id), None)
+        assert hook is not None, f"hook id '{hook_id}' must exist (D-0016)"
+        assert hook.get("entry") == entry
+        assert hook.get("language") == "python"
+        assert hook.get("language_version") == "python3.12"
+        assert hook.get("additional_dependencies") == deps, (
+            f"{hook_id} must pin {deps[0]} exactly (bump via toolkit release)"
+        )
         assert hook.get("pass_filenames") is False
         assert hook.get("always_run") is True
 
