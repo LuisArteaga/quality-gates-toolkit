@@ -9,8 +9,13 @@ consume them.
 Precedence (highest to lowest):
   1. Node-specific env var: ``f"{node_name.upper()}_MODEL"`` (e.g. ``SECURITY_MODEL``)
   2. General env var: ``AGENT_MODEL``
-  3. ``factory.json`` entry for the node
+  3. ``factory.json`` entry for the node: top level first, then known/declared
+     nested sections (see ``DEFAULT_JUDGES_SECTIONS`` / ``JUDGES_SECTION_KEY``)
   4. Hardcoded ``DEFAULT_MODEL`` constant
+
+Consumers may nest judge configs under a section (e.g.
+``ci_cd_pr_judges``) to coexist with other factory sections; resolution is
+additive — flat top-level configs behave exactly as before.
 
 The config file location is resolved at call time from the
 ``REVIEW_CONFIG_PATH`` env var (set by the toolkit's reusable workflows to the
@@ -32,6 +37,14 @@ from typing import Any
 DEFAULT_MODEL = "z-ai/glm-5.3-flash"
 CONFIG_PATH_ENV = "REVIEW_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = "config/factory.json"
+# Nested factory.json sections scanned when a node is not at the top level.
+# Scanning is bounded to these known names plus sections declared via
+# JUDGES_SECTION_KEY — a generic dict-of-dicts scan could silently resolve a
+# judge node from an unrelated section whose node names happen to collide.
+DEFAULT_JUDGES_SECTIONS = ("ci_cd_pr_judges",)
+# Reserved top-level factory.json key: a list of additional nested section
+# names to scan. The name is reserved and cannot be used as a node name.
+JUDGES_SECTION_KEY = "judges-section"
 
 
 def _warn(message: str) -> None:
@@ -64,6 +77,34 @@ def load_factory_config() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _declared_judges_sections(factory: dict[str, Any]) -> list[str]:
+    """Return section names declared under the reserved ``judges-section`` key.
+
+    Malformed declarations warn and are ignored so resolution degrades
+    gracefully (same style as the rest of the module).
+    """
+    declared = factory.get(JUDGES_SECTION_KEY)
+    if declared is None:
+        return []
+    if isinstance(declared, list) and all(isinstance(s, str) for s in declared):
+        return list(declared)
+    _warn(
+        f"Config key '{JUDGES_SECTION_KEY}' must be a list of nested section "
+        f"names; ignoring."
+    )
+    return []
+
+
+def _nested_section_candidates(declared: list[str]) -> list[str]:
+    """Ordered nested-section scan list: declared sections first (consumer
+    intent), then the built-in defaults; deduplicated, order preserved."""
+    candidates: list[str] = []
+    for section in declared + list(DEFAULT_JUDGES_SECTIONS):
+        if section not in candidates:
+            candidates.append(section)
+    return candidates
+
+
 def resolve_model_config(node_name: str) -> dict[str, Any]:
     """Resolve the judge Model Config for ``node_name``.
 
@@ -72,10 +113,36 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
     "fallback_model": str | None}``
     """
     factory = load_factory_config()
+    # Validate the optional section declaration up-front (even when the
+    # top-level resolves) so a malformed declaration is never silently
+    # ignored; candidates are only consumed on a top-level miss.
+    declared = _declared_judges_sections(factory) if isinstance(factory, dict) else []
     factory_cfg = factory.get(node_name) if isinstance(factory, dict) else None
     if factory_cfg is not None and not isinstance(factory_cfg, dict):
         _warn(f"Factory entry for node '{node_name}' is not an object; ignoring.")
         factory_cfg = None
+
+    # Nested-section fallback (union resolution): only on top-level miss or
+    # ignored top-level entry. Scans known/declared sections in order; the
+    # first section holding the node wins.
+    source_section: str | None = None
+    if factory_cfg is None and isinstance(factory, dict):
+        for section in _nested_section_candidates(declared):
+            section_data = factory.get(section)
+            if not isinstance(section_data, dict):
+                continue
+            entry = section_data.get(node_name)
+            if entry is None:
+                continue
+            if not isinstance(entry, dict):
+                _warn(
+                    f"Factory entry for node '{node_name}' in section "
+                    f"'{section}' is not an object; ignoring."
+                )
+                continue
+            factory_cfg = entry
+            source_section = section
+            break
 
     # 1 & 2. Environment overrides
     node_env_var = f"{node_name.upper()}_MODEL"
@@ -132,6 +199,12 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
             "fallback_model": None,
         }
 
+    if source_section:
+        print(
+            f"[INFO] Judge config for '{node_name}' resolved from nested "
+            f"section '{source_section}'.",
+            file=sys.stderr,
+        )
     print(
         f"[INFO] Resolved judge config (node={node_name}): model={cfg['model']}, "
         f"routing={'auto' if cfg['routing'] is None else 'pinned'}",

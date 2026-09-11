@@ -282,6 +282,29 @@ Node names are fixed by the toolkit: `syntax_lint`, `test_coverage`,
 Environment overrides (highest precedence): `SECURITY_MODEL` (per-node) >
 `AGENT_MODEL` (global) > `factory.json` > toolkit default.
 
+**Nested judge sections** — consumers whose `factory.json` also holds
+non-judge sections (e.g. an orchestrator config) may nest the four judge
+nodes under a section instead of the top level:
+
+```json
+{
+  "other_tool": { "model": "...", "routing": null },
+  "ci_cd_pr_judges": {
+    "syntax_lint": { "model": "...", "routing": null },
+    "test_coverage": { "model": "...", "routing": ["Provider A"] },
+    "architecture": { "model": "...", "routing": null },
+    "security": { "model": "...", "routing": null }
+  }
+}
+```
+
+Resolution scans top level first (flat configs behave exactly as before),
+then the known section `ci_cd_pr_judges`. Consumers using different section
+names declare them via the optional reserved top-level key
+`"judges-section": ["my_judges", "ci_cd_pr_judges"]` — declared sections are
+scanned before the known default. A nested hit is logged (`[INFO]` with the
+section name); the verdict protocol is unaffected. See D-0015.
+
 Judges also read the **caller's** `docs/context.md` and `docs/adr/*.md` (if
 present) as architecture context — your documented decisions directly shape
 the architecture verdict.
