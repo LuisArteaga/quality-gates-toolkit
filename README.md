@@ -64,7 +64,7 @@ gates still expect the *caller* project to be self-contained:
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.3.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.4.0
     with:
       coverage-floor: 80
     secrets:
@@ -106,7 +106,7 @@ the Python gates and opts in explicitly:
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.3.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.4.0
     with:
       coverage-floor: 0          # nominal — Python test gate disabled below
       enable-lint: false
@@ -184,7 +184,7 @@ Each micro-workflow is independently callable, e.g.:
 ```yaml
 jobs:
   security:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.3.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.4.0
     with:
       scan-paths: "src"
 ```
@@ -214,7 +214,7 @@ centrally — composing micro-workflows yourself means re-implementing it.
 | `config-path` | string | `"config/factory.json"` | Judge config path relative to the caller repository root. |
 | `diff-exclude` | string | `""` | Space-separated git pathspecs excluded from the judge diff (e.g. `uv.lock package-lock.json`). |
 | `batch-budget-chars` | string | `""` (effective `200000`) | Per-batch character budget for splitting the judge diff. Raise it (e.g. `500000`) so large PRs are judged whole — small batches make judges report "tests missing" for files whose tests landed in another batch. |
-| `toolkit-ref` | string | `"v1.3.0"` | Ref of the Python-implementation checkout. Overrides are deliberate. |
+| `toolkit-ref` | string | `"v1.4.0"` | Ref of the Python-implementation checkout. Overrides are deliberate. |
 
 Secrets: `openrouter-api-key` (needed when `enable-llm-review` is on) and
 `judge-token` (optional) — see [Secrets](#secrets).
@@ -226,9 +226,9 @@ Secrets: `openrouter-api-key` (needed when `enable-llm-review` is on) and
 | `lint.yml` | `python-version` `"3.12"` · `lint-paths` `"."` · `extra-pip-packages` `"none"` | — |
 | `test.yml` | `python-version` `"3.12"` · `cov-paths` `"."` · `coverage-floor` (required) · `extra-pip-packages` `"none"` · `prefetch-tree-sitter` `false` | — |
 | `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `enable-semgrep` `true` · `enable-pip-audit` `true` | — |
-| `secret-scan.yml` | `toolkit-ref` `"v1.3.0"` | — |
-| `diff-coverage.yml` | `toolkit-ref` `"v1.3.0"` · `coverage-artifact` `"coverage-json"` | — |
-| `llm-pr-review.yml` | `toolkit-ref` `"v1.3.0"` · `config-path` `"config/factory.json"` · `diff-exclude` `""` · `prefetch-tree-sitter` `false` · `batch-budget-chars` `""` | `openrouter-api-key` (required) · `judge-token` (optional) |
+| `secret-scan.yml` | `toolkit-ref` `"v1.4.0"` | — |
+| `diff-coverage.yml` | `toolkit-ref` `"v1.4.0"` · `coverage-artifact` `"coverage-json"` | — |
+| `llm-pr-review.yml` | `toolkit-ref` `"v1.4.0"` · `config-path` `"config/factory.json"` · `diff-exclude` `""` · `prefetch-tree-sitter` `false` · `batch-budget-chars` `""` | `openrouter-api-key` (required) · `judge-token` (optional) |
 | `js-test.yml`, `js-typecheck.yml`, `js-lint.yml` | `node-version` `"22"` | — |
 
 ## JavaScript / TypeScript gates
@@ -252,7 +252,7 @@ harness owns the environment, the project owns the tools.**
 ```yaml
 jobs:
   js-test:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/js-test.yml@v1.3.0
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/js-test.yml@v1.4.0
     with:
       node-version: "22"
 ```
@@ -338,7 +338,7 @@ no-op. Details: [docs/context.md](docs/context.md).
 ```yaml
 repos:
   - repo: https://github.com/LuisArteaga/quality-gates-toolkit
-    rev: v1.3.0            # pin a tag
+    rev: v1.4.0            # pin a tag
     hooks:
       - id: secret-scan    # --staged scan of your staged changes
       - id: js-typecheck   # full-project `npm run typecheck` (needs node_modules)
@@ -393,7 +393,7 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 
 ## Versioning
 
-- `uses:` pins an immutable release tag (e.g. `@v1.3.0`); `toolkit-ref`
+- `uses:` pins an immutable release tag (e.g. `@v1.4.0`); `toolkit-ref`
   (default = that same tag) selects the Python implementation checkout.
   Overrides are deliberate.
 - Public contracts (verdict-block format, gate ordering, routing modes,
