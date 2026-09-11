@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 TOOLKIT_ROOT = Path(__file__).resolve().parent.parent
+SHIM_REVIEW = TOOLKIT_ROOT / "scripts" / "review.py"
 
 # The calibratable judge surface: everything the planner's eval harness
 # imports today plus the shared neutrality instructions it composes with.
@@ -113,6 +114,27 @@ def test_public_judge_names_are_identity_shared_across_surfaces():
         assert getattr(flat, name) is getattr(impl, name), (
             f"review.{name} must be the same object on both surfaces"
         )
+
+
+def test_direct_execution_dispatches_to_the_implementation(tmp_path: Path):
+    """The shim's ``__main__`` dispatch is the llm-pr-review invocation
+    surface (D-0017): running ``python3 scripts/review.py`` must reach the
+    implementation's ``main()`` and hit its fail-loud guard — missing
+    ``PR_NUMBER`` exits 1 with the error on stderr, before any judging or
+    network I/O."""
+    result = subprocess.run(
+        [sys.executable, str(SHIM_REVIEW)],
+        cwd=str(tmp_path),
+        env={"GITHUB_WORKSPACE": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 1, (
+        f"shim direct execution must fail loudly on missing PR_NUMBER:\n{result.stderr}"
+    )
+    assert "PR_NUMBER not set" in result.stderr
 
 
 def test_consumer_with_local_scripts_package_can_import_the_judge_api(

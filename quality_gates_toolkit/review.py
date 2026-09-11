@@ -1454,7 +1454,7 @@ def _aggregate_verdicts(
 def _enrich_chunk(chunk_diff: str, workspace_dir: str) -> str:
     """Enrich a single diff chunk with enclosing function context.
 
-    Uses enrich_diff_with_function_context from scripts/enrichment.py.
+    Uses enrich_diff_with_function_context from quality_gates_toolkit.enrichment.
     Applied per-chunk so each file's context stays with its diff segment
     (avoids ADR-0023's pooled-format orphan bug). Enrichment is best-effort:
     any failure (missing optional tree-sitter pack, parse errors, I/O) logs a

@@ -27,7 +27,8 @@ build-backend = "setuptools.build_meta"
 packages = ["quality_gates_toolkit", "scripts"]
 
 [project.optional-dependencies]
-# Runtime dependency of scripts/enrichment.py (enclosing-function-context
+# Runtime dependency of quality_gates_toolkit/enrichment.py
+# (enclosing-function-context
 # enrichment). review.py imports it lazily and degrades gracefully when the
 # pack is absent, but the test suite exercises parsers directly.
 dev = [
