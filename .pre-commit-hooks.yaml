@@ -1,11 +1,13 @@
 # Public pre-commit hook interface — this file makes the repository usable
 # as a remote pre-commit hook source (see README "Pre-commit hook").
-# `secret-scan` requires `language: python`, so the toolkit is
-# pip-installable: pyproject.toml declares the build backend and the
-# `secret-scan` console script that pre-commit invokes inside its isolated
-# hook environment. The js-* hooks use `language: system` instead — they
-# invoke npm from the consumer's environment and need node_modules there
-# (see README "JavaScript / TypeScript gates").
+# Hook ownership split (D-0016): `language: python` hooks run in
+# pre-commit's isolated environment at toolkit-pinned versions and need no
+# consumer venv — `secret-scan` via the console script this package
+# installs, `semgrep`/`pip-audit` via additional_dependencies. The
+# `language: system` hooks run in the consumer's environment and need the
+# project's own toolchain there (node_modules for the js-* hooks, mypy plus
+# the project's dependency surface for `mypy`) — see README
+# "JavaScript / TypeScript gates".
 - id: secret-scan
   name: quality-gates-toolkit secret scan
   description: Best-effort regex scan for committed secrets (stdlib only).
@@ -32,5 +34,28 @@
   description: Runs `npm run lint` over the full project (requires node_modules).
   entry: npm run lint
   language: system
+  pass_filenames: false
+  always_run: true
+- id: mypy
+  name: quality-gates-toolkit mypy
+  description: Runs mypy from the consumer's project environment (requires mypy plus the project's dependency surface there). Advisory — the CI lint.yml pin stays authoritative.
+  entry: mypy
+  language: system
+  pass_filenames: false
+  always_run: true
+- id: semgrep
+  name: quality-gates-toolkit semgrep
+  description: Runs pinned semgrep scan in an isolated environment (consumer supplies --config and paths via args).
+  entry: semgrep scan
+  language: python
+  additional_dependencies: ["semgrep==1.177.0"]
+  pass_filenames: false
+  always_run: true
+- id: pip-audit
+  name: quality-gates-toolkit pip-audit
+  description: Runs pinned pip-audit in an isolated environment (consumer supplies arguments via args, e.g. -r requirements.txt).
+  entry: pip-audit
+  language: python
+  additional_dependencies: ["pip-audit==2.10.1"]
   pass_filenames: false
   always_run: true
