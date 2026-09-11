@@ -361,7 +361,10 @@ Hook ownership split (D-0016) — version ownership follows dependency need:
 
 `language: python` hooks run in pre-commit's isolated environment with the
 toolkit's pinned versions — the local mirror of the CI `lint.yml` pin
-discipline; pin bumps ship as new toolkit releases. `mypy` is deliberately
+discipline; pin bumps ship as new toolkit releases. They also pin the env
+interpreter (`language_version: python3.12`, the toolkit's floor): a bare
+pre-commit installed under an older Python otherwise fails the env install
+with `requires a different Python`. `mypy` is deliberately
 `language: system`: type checking needs your project's dependency surface,
 and an isolated environment would fail on every third-party import — the
 same reason the js-* hooks run `npm` from your environment.

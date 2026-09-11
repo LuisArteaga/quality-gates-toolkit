@@ -478,7 +478,12 @@ follows the tool's dependency need:
   `secret-scan` (console script from this package, existing) plus new
   `semgrep` (`semgrep==1.177.0`, entry `semgrep scan`) and `pip-audit`
   (`pip-audit==2.10.1`, entry `pip-audit`). Pin bumps ship as new toolkit
-  releases, never on a floating ref.
+  releases, never on a floating ref. These hooks also pin the env
+  interpreter with `language_version: python3.12` (the package's floor):
+  pre-commit otherwise builds the isolated env with the interpreter it
+  itself runs under, which can be older and would fail the env install
+  with `requires a different Python` (observed with a uv-managed
+  pre-commit running under 3.11).
 - `language: system` — tools that must see the consumer project's own
   dependency surface run from the consumer's environment at consumer-owned
   versions: the `js-*` npm hooks (existing) plus new `mypy` (entry `mypy`,

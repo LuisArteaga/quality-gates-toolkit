@@ -462,6 +462,7 @@ def test_pre_commit_hooks_file_declares_secret_scan():
     assert hook is not None, "hook id 'secret-scan' must exist (README quick start)"
     assert hook.get("entry") == "secret-scan"
     assert hook.get("language") == "python"
+    assert hook.get("language_version") == "python3.12"
     assert hook.get("pass_filenames") is False
     assert hook.get("always_run") is True
 
@@ -508,6 +509,7 @@ def test_pre_commit_hooks_declare_python_tool_hooks():
         assert hook is not None, f"hook id '{hook_id}' must exist (D-0016)"
         assert hook.get("entry") == entry
         assert hook.get("language") == "python"
+        assert hook.get("language_version") == "python3.12"
         assert hook.get("additional_dependencies") == deps, (
             f"{hook_id} must pin {deps[0]} exactly (bump via toolkit release)"
         )

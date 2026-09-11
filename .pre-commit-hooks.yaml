@@ -3,7 +3,10 @@
 # Hook ownership split (D-0016): `language: python` hooks run in
 # pre-commit's isolated environment at toolkit-pinned versions and need no
 # consumer venv — `secret-scan` via the console script this package
-# installs, `semgrep`/`pip-audit` via additional_dependencies. The
+# installs, `semgrep`/`pip-audit` via additional_dependencies. Their
+# `language_version` pins the env interpreter to python3.12 (the package
+# floor): pre-commit otherwise defaults to the interpreter IT runs under,
+# which may be older and would fail the env install. The
 # `language: system` hooks run in the consumer's environment and need the
 # project's own toolchain there (node_modules for the js-* hooks, mypy plus
 # the project's dependency surface for `mypy`) — see README
@@ -13,6 +16,7 @@
   description: Best-effort regex scan for committed secrets (stdlib only).
   entry: secret-scan
   language: python
+  language_version: python3.12
   pass_filenames: false
   always_run: true
 - id: js-typecheck
@@ -48,6 +52,7 @@
   description: Runs pinned semgrep scan in an isolated environment (consumer supplies --config and paths via args).
   entry: semgrep scan
   language: python
+  language_version: python3.12
   additional_dependencies: ["semgrep==1.177.0"]
   pass_filenames: false
   always_run: true
@@ -56,6 +61,7 @@
   description: Runs pinned pip-audit in an isolated environment (consumer supplies arguments via args, e.g. -r requirements.txt).
   entry: pip-audit
   language: python
+  language_version: python3.12
   additional_dependencies: ["pip-audit==2.10.1"]
   pass_filenames: false
   always_run: true
