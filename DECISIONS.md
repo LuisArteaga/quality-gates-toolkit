@@ -413,3 +413,44 @@ it.
 ### Amendments
 
 None.
+
+## D-0015 — Nested judge-config sections: additive union resolution
+
+- Date: 2026-09-08
+- Status: Accepted
+
+### Decision
+
+`judge_config.resolve_model_config` resolves a judge node's config as a
+union with fixed precedence:
+
+1. Top-level `factory[node_name]` — unchanged v1.3.0 behavior, still first.
+2. On a top-level miss: bounded nested-section scan. Sections scanned are
+   the known default `ci_cd_pr_judges` plus any additional section names
+   the consumer declares under the reserved top-level key
+   `"judges-section"` (list of strings, scanned before the known default,
+   deduplicated). The first section holding the node wins.
+3. Env overrides and the `DEFAULT_MODEL` fallback as before, unchanged.
+
+The scan is bounded to known/declared section names — never a generic
+dict-of-dicts walk. A nested hit logs `[INFO]` with the section name; a
+malformed `judges-section` declaration warns and is ignored. No accepted
+key is renamed or removed in 1.x (deprecation-by-warning only), and the
+verdict-block protocol (D-0002) is untouched.
+
+### Rationale
+
+The first nested consumer (agentic-planner-core) co-locates orchestrator
+sections (`cli_orchestration`, `refine_graph_nodes`) with its judge section
+in one `factory.json`; before this change every judge silently fell back to
+`DEFAULT_MODEL`. A generic scan of every top-level dict-of-dicts would risk
+silently resolving a judge from an unrelated section whose node names
+collide, so the scan is bounded to known/declared names — deterministic,
+documentable, and reproducible. Flat consumers keep byte-identical
+resolution (golden contract tests pin the shipped example config's
+resolution, and the review body / verdict block is independent of config
+sourcing), so the change is purely additive and needs no major ref.
+
+### Amendments
+
+None.
