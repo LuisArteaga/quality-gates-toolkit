@@ -473,6 +473,11 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 - The `pyproject.toml` version field tracks the same release train (bumped
   together with the toolkit-ref pin sites in each release PR) and names the
   tag pip consumers install for the [importable judge API](#importable-judge-api).
+- Each tagged release is documented in [`CHANGELOG.md`](CHANGELOG.md) (Keep a
+  Changelog format) and mirrored into a matching
+  [GitHub Release](https://github.com/LuisArteaga/quality-gates-toolkit/releases);
+  creating that release page is the final step of the release checklist
+  (D-0018).
 - Public contracts (verdict-block format, gate ordering, routing modes,
   defaults) are recorded in [`DECISIONS.md`](DECISIONS.md) and only change
   with a new major ref.

@@ -568,3 +568,39 @@ which is the same mechanism Pillow uses to keep `import PIL` working.
 ### Amendments
 
 None.
+
+## D-0018 — Release notes: CHANGELOG.md and GitHub Releases from one entry
+
+- Date: 2026-09-12
+- Status: Accepted
+
+### Decision
+
+Every tagged release publishes two consumer-facing change surfaces derived
+from one authored entry: a Keep a Changelog-format section in the root
+`CHANGELOG.md`, written in the same release PR that bumps the toolkit-ref
+pin sites, and a GitHub Release created for the tag whose notes body mirrors
+that section verbatim. Creating the GitHub Release is the final step of the
+release checklist (tag → release page). The changelog is the portable
+surface — it travels with the tree, so `git show <tag>:CHANGELOG.md`
+documents any pinned version; the Releases are the GitHub-native surface —
+watch notifications, `.github/release.yml` note generation, and Dependabot's
+release-notes embedding in consumers' reusable-workflow update PRs.
+
+### Rationale
+
+The toolkit's consumers pin immutable tags and bump pins manually (often via
+Dependabot), so releases must be discoverable where those consumers look:
+GitHub's own features key off Releases, while the broader ecosystem
+convention (Keep a Changelog; Renovate reads both surfaces) keys off a root
+`CHANGELOG.md`. Authoring both from one entry avoids the drift class this
+repo already guards against (per-release pin-site sweeps exist because
+duplicated version facts rot). Full release automation via release-please
+was rejected for now: it would displace the curated release-PR process
+(scripted per-release pin-site bumps with expected-count asserts).
+`DECISIONS.md` stays the ADR-lite decision log — decisions, not release
+changes — so it is neither renamed nor merged with the changelog.
+
+### Amendments
+
+None.
