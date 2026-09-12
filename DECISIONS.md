@@ -372,7 +372,12 @@ statically by the workflow contract tests.
 
 ### Amendments
 
-None.
+- 2026-09-12 (D-0020): the toggle contract remains valid for the polyglot
+  composite, but composites are the scaling answer that came after — each
+  language group now also ships a dedicated `<lang>-checks.yml` whose own
+  gates default ON (the caller chose that language's entry point), and
+  new languages add a new composite file instead of growing
+  `pr-checks.yml`.
 
 ## D-0014 — Python install contract: lint is best-effort, test is strict
 
@@ -674,4 +679,96 @@ None.
   — decision-table documentation for overlapping mechanisms.
 - ot-telemetry-engine PR #62 — empirical permission-validation finding
   (static escalation check even for skipped composite jobs).
+
+## D-0020 — Per-language composites; new languages add files, not polyglot toggles
+
+- Date: 2026-09-12
+- Status: Accepted
+
+### Decision
+
+Every language group ships a dedicated composite entry point named
+`<lang>-checks.yml`. The first two are `python-checks.yml` (lint, test,
+security with its sub-toggles, secretscan, diffcoverage, optional
+llmreview) and `js-checks.yml` (js-lint, js-test, js-typecheck, optional
+secretscan, optional llmreview). Each NEW language ships a NEW composite
+file instead of growing `pr-checks.yml`; the polyglot composite stays
+as-is for this release line — existing consumers keep working
+byte-for-byte, and removal, if ever, is a v2 major decision (D-0007).
+
+Each language composite restates the D-0001 ordering policy internally
+(accepted trade-off: the `needs:` chain is duplicated per file in
+exchange for zero skipped-check noise for monolingual callers) and
+carries the D-0011 pull_request guard, the D-0005 explicit secret
+forwarding, and a `toolkit-ref` input defaulting to the release tag
+(same-tag relative-ref resolution, as in the polyglot composite). A
+language composite defaults its OWN language's gates ON — the caller
+chose that entry point — inverting the polyglot's JS-OFF default;
+`enable-llm-review` defaults false and `enable-secret-scan` is true on
+both. No coverage/diff-coverage job exists on the JS composite: the JS
+harness owns the environment (D-0012) and has no coverage.json artifact
+contract.
+
+A standalone "LLM composite" is deliberately rejected: GitHub Actions
+`needs:` cannot cross workflow boundaries, so a judge workflow triggered
+independently cannot structurally wait for another composite's
+deterministic gates — it would have to poll check-run state instead
+(observational gating), which duplicates the merge gate's fail-fast
+logic, adds latency, and is race-prone (check runs register late; a poll
+can read the previous run's results). D-0001 is structural, not
+observational. Instead, each language composite embeds an optional
+`llmreview` job behind `enable-llm-review` (default false), and the
+standalone judge surface (`llm-pr-review.yml`) remains available to
+callers who want to own the ordering themselves — exactly as the polyglot
+composite calls it internally.
+
+The exactly-one rule: a repository wiring multiple language composites on
+one PR must enable `enable-llm-review` (and any other language-agnostic
+gate it keeps enabled in more than one composite, i.e.
+`enable-secret-scan`) in EXACTLY ONE composite. The judge reviews the
+whole PR diff regardless of which composite invokes it, so one review per
+PR is both sufficient and cost-correct; two enabled reviews mean double
+cost and two verdict blocks. The v1 mitigation is the documented rule — a
+static guard is impossible across workflow files, and runtime
+duplicate-detection (the judge noticing an existing verdict block from
+the same event) is a candidate follow-up, not in scope.
+
+### Rationale
+
+The polyglot composite's toggles (D-0013) scale badly in the checks list:
+jobs are static, so every disabled gate renders as a permanent `Skipped`
+entry (the D-0019 finding) — a toolkit with ~100 gates across many
+languages would flood every caller's checks list. Per-language composites
+keep the one-`uses:` ergonomics while making monolingual callers
+skip-free by construction; the D-0013 toggle contract remains valid for
+the polyglot shape (amended below). Embedding the judge per composite
+rather than adding a third workflow keeps the cost gate structural.
+Check-run naming is unchanged (the caller's job id prefixes the
+composite's job ids, e.g. `ci / lint / lint`), so branch-protection
+required-check sets configured against the polyglot composite keep
+working when a caller switches to a language composite under the same
+caller job id. First runtime canary: per D-0019 the toolkit's own CI
+stays a micro-workflow self-test harness, so the new composites are
+contract-tested statically and take their first runtime exercise with
+the first consumer — the same pattern the JS gates shipped under (their
+runtime canary was the first npm consumer).
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- [community/26632](https://github.com/orgs/community/discussions/26632)
+  — job dependencies cannot cross workflow-file boundaries ("You can't.
+  What you can do is use the same workflow file"); the structural basis
+  for embedding the judge per composite instead of a standalone LLM
+  workflow.
+- [community/44490](https://github.com/orgs/community/discussions/44490)
+  and [community/72708](https://github.com/orgs/community/discussions/72708)
+  — static `Skipped` rendering of `if:`-disabled jobs; the checks-list
+  noise this decision removes for monolingual callers.
+- ot-telemetry-engine PR #62 — static permission validation fires even
+  for skipped composite jobs; the language composites' llmreview
+  permission shape follows the same caller contract.
 
