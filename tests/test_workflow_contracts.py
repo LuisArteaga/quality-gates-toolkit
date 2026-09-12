@@ -498,8 +498,9 @@ def test_composite_canary_triggers_on_schedule_and_dispatch_only():
 def test_composite_canary_runs_the_composite_with_judges_disabled():
     jobs = _jobs(_load("composite-canary.yml"))
     assert set(jobs) == {"canary"}, "the canary runs exactly one composite call"
-    with_ = jobs["canary"]["with"]
-    assert jobs["canary"]["uses"] == "./.github/workflows/pr-checks.yml"
+    job = jobs["canary"]
+    with_ = job["with"]
+    assert job["uses"] == "./.github/workflows/pr-checks.yml"
     assert with_["enable-llm-review"] is False, (
         "an unattended canary must never spend judge tokens"
     )
@@ -507,6 +508,18 @@ def test_composite_canary_runs_the_composite_with_judges_disabled():
         "the canary must exercise the default-branch tip, not a published tag"
     )
     assert "coverage-floor" in with_, "coverage-floor is a REQUIRED composite input"
+    permissions = job["permissions"]
+    assert permissions == {"contents": "read", "pull-requests": "write"}, (
+        "canary must grant pull-requests: write (static escalation validation"
+        " startup-fails the call without it, even for the skipped judge job)"
+    )
+
+
+def test_ci_carries_the_coverage_floor_policy():
+    """D-0004: coverage-floor is a REQUIRED policy input — the direct
+    caller keeps stating it explicitly (migrated from the composite call)."""
+    with_ = _jobs(_load("ci.yml"))["test"]["with"]
+    assert "coverage-floor" in with_, "ci.yml test job must state the coverage floor"
 
 
 def test_micro_workflows_use_least_privilege_permissions():
