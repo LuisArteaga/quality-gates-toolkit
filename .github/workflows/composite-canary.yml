@@ -1,0 +1,67 @@
+name: Composite canary
+
+# Runtime verification of the composite entry point (D-0019): ci.yml now
+# self-tests the micro-workflows directly, so this workflow is the only
+# GitHub-side exercise of pr-checks.yml — a nightly run from the default
+# branch, plus manual dispatches from the release checklist BEFORE a tag is
+# cut, so a broken composite cannot reach a tag unexercised.
+#
+# Triggers are deliberately schedule + workflow_dispatch ONLY: a
+# pull_request trigger would put a "Composite canary" check on every PR —
+# exactly the duplicate-check noise this change removes from PR checks
+# lists.
+#
+# Expected skipped jobs (not failures): js-lint/js-test/js-typecheck — this
+# repository is Python-only and the composite's JS gate group defaults OFF
+# (D-0013); a disabled gate renders as "Skipped" and reports Success for
+# branch protection. diffcoverage is skipped too: the D-0008 carve-out
+# disables the diff gate, and the job is PR-events-only anyway.
+#
+# The LLM review is disabled: an unattended nightly run must never spend
+# judge tokens, and the schedule/workflow_dispatch events carry no PR to
+# review (llm-pr-review.yml fail-fasts on an empty PR number).
+#
+# Scheduled-workflow dormancy: GitHub auto-disables scheduled workflows in
+# a public repository after 60 days without repository activity (a warning
+# email reaches the last editor ~23 days in). If the nightly canary stops
+# appearing, re-enable it on the Actions page; the release checklist's
+# pre-tag dispatch surfaces a disabled schedule early, because a disabled
+# workflow cannot be dispatched.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    # A called workflow may only narrow the token granted by this job —
+    # but permission escalation is validated statically BEFORE jobs start,
+    # even for composite jobs that would be skipped by their `if`. The
+    # composite's llmreview job declares pull-requests: write, so this
+    # call must grant it or the whole run dies as startup_failure (first
+    # observed on ot-telemetry-engine PR #62). The grant is inert while
+    # enable-llm-review stays false.
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/pr-checks.yml
+    with:
+      python-version: "3.12"
+      # Same policy values as the toolkit's own PR self-test (D-0017
+      # package coverage). github.sha resolves to the default-branch tip on
+      # schedule events and to the dispatched ref on manual runs — the
+      # composite definition and the Python implementation both come from
+      # the same commit, never from a published tag.
+      lint-paths: "scripts quality_gates_toolkit"
+      cov-paths: "scripts quality_gates_toolkit"
+      coverage-floor: 80
+      # D-0008 bootstrap carve-out: no changed-line coverage gate here;
+      # the floor-based total coverage gate stays the enforced policy.
+      enable-diff-gate: false
+      prefetch-tree-sitter: true
+      enable-llm-review: false
+      toolkit-ref: ${{ github.sha }}

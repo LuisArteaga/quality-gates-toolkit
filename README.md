@@ -64,6 +64,25 @@ gates still expect the *caller* project to be self-contained:
   root. A missing or malformed file is not fatal — judges fall back to the
   toolkit default model and log a `[WARN]`.
 
+## Which entry point?
+
+| Your repository | Entry point | Checks-list appearance |
+|---|---|---|
+| Python-only or Python + JS, wants the opinionated suite | Composite `pr-checks.yml` | Every **enabled** gate runs; disabled gates (the JS group by default) appear as `Skipped` |
+| Python-only, wants a skip-free checks list | Micro-workflows directly — the toolkit's own `ci.yml` is the live example (D-0019) | Every called gate runs |
+| Pure JS/TS | JS micro-workflows (`js-typecheck.yml`, `js-test.yml`, `js-lint.yml`) | Skip-free by construction — the composite's JS-only shape would show the six disabled Python gates as `Skipped` |
+
+GitHub Actions cannot hide a disabled job: jobs in a workflow file are
+static, and a job turned off by `if:` — including a job that calls a
+reusable workflow — always renders as `Skipped` (it reports Success for
+branch protection, but the noise is real; upstream:
+[community/44490](https://github.com/orgs/community/discussions/44490),
+[community/72708](https://github.com/orgs/community/discussions/72708)).
+The composite stays the opinionated default for Python callers — three
+inert `Skipped` checks are the price of one `uses:` — while
+single-language repositories that want a clean checks list call the
+micro-workflows directly.
+
 ## Quick start (composite)
 
 ```yaml
@@ -128,6 +147,12 @@ jobs:
 policy contract should not weaken silently; pass a nominal `0` when the
 Python test gate is off. `secret-scan` is language-agnostic and stays on.
 
+That example demonstrates the toggle contract — for a *pure* JS/TS
+repository it is the noisy shape: all six disabled Python gates render as
+`Skipped` checks. Pure-JS repositories should call the JS micro-workflows
+directly instead (skip-free by construction — see
+[Which entry point?](#which-entry-point)).
+
 ## Secrets
 
 The workflows declare two secret *inputs* (`openrouter-api-key`,
@@ -172,10 +197,20 @@ usage (`enable-llm-review: false`, the default) reads no secrets at all.
 
 Fork PRs cannot access repository secrets, so the LLM review can never
 authenticate for forked contributions. Enable it conditionally for same-repo
-PRs only — `ci.yml` shows the pattern:
+PRs only — on the composite, pass the guard as the review toggle:
 
 ```yaml
 enable-llm-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+```
+
+On direct micro-workflow calls, guard the judge job itself (the toolkit's
+own `ci.yml` is the live example, D-0019):
+
+```yaml
+llmreview:
+  needs: [lint, test, security, secretscan]
+  if: github.event.pull_request.head.repo.full_name == github.repository
+  uses: LuisArteaga/quality-gates-toolkit/.github/workflows/llm-pr-review.yml@v1.6.0
 ```
 
 `pull_request_target` is deliberately not offered as a workaround: it would
@@ -426,6 +461,12 @@ Two loud-fail paths to expect:
 
 ## Troubleshooting
 
+- **A check shows as `Skipped`** — the gate is intentionally disabled, not
+  failed or forgotten: GitHub renders a job turned off by its `if:` as
+  `Skipped` (and reports Success for branch protection). The common case
+  is a composite caller leaving the JS gate group off (D-0013);
+  micro-workflow callers get a skip-free checks list by construction
+  (D-0019).
 - **The diff-coverage gate fails: "never imported by any test (absent from
   report)"** — a newly added top-level package is not measured. Add it to
   `cov-paths`; the gate judges only lines that appear in the coverage
@@ -477,7 +518,9 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
   Changelog format) and mirrored into a matching
   [GitHub Release](https://github.com/LuisArteaga/quality-gates-toolkit/releases);
   creating that release page is the final step of the release checklist
-  (D-0018).
+  (D-0018). The checklist's first step is a manual dispatch of the
+  composite canary (D-0019), so a broken composite cannot reach a tag
+  unexercised.
 - Public contracts (verdict-block format, gate ordering, routing modes,
   defaults) are recorded in [`DECISIONS.md`](DECISIONS.md) and only change
   with a new major ref.
@@ -487,7 +530,7 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 ## Known limitations
 
 - Fork PRs cannot access repository secrets; run the LLM review only for
-  same-repo PRs (see `ci.yml` for the conditional-enable pattern).
+  same-repo PRs (both gating patterns under [Fork PRs](#fork-prs)).
 - The toolkit's own CI passes its PR head SHA as `toolkit-ref` — that
   checkout target does not exist for fork PRs.
 - `pull_request_target` is deliberately not offered as a fork workaround

@@ -2,10 +2,13 @@
 
 These tests are the deterministic enforcement of the policy decisions
 recorded in DECISIONS.md. A workflow edit that violates any of them fails
-`make verify` before it can ever reach a consumer:
+`uv run pytest -q` before it can ever reach a consumer:
 
 - D-0006 hybrid architecture: micro-workflows are callable only via
   workflow_call; the composite orchestrates JOBS with relative ./ refs.
+- D-0019 self-test harness: ci.yml calls the micro-workflows directly
+  (never the composite) and the composite canary runs on schedule +
+  workflow_dispatch only — never on pull_request.
 - D-0001 gate ordering: the LLM review job runs only after every enabled
   deterministic gate is green (success OR skipped — disabled gates must
   not block the cost gate) and only on pull_request events (D-0011).
@@ -288,7 +291,7 @@ def test_diff_coverage_runs_only_after_test_success_and_on_pr_events():
 
 
 def test_no_secrets_inherit_anywhere():
-    for name in [*MICRO_WORKFLOWS, "pr-checks.yml", "ci.yml"]:
+    for name in [*MICRO_WORKFLOWS, "pr-checks.yml", "ci.yml", "composite-canary.yml"]:
         raw = (WORKFLOWS / name).read_text()
         assert "secrets: inherit" not in raw, f"{name} must forward secrets explicitly"
 
@@ -362,7 +365,7 @@ def test_coverage_artifact_handoff_from_test_to_diff_coverage():
 def test_third_party_actions_are_sha_pinned():
     import re
 
-    for name in (*MICRO_WORKFLOWS, "pr-checks.yml", "ci.yml"):
+    for name in (*MICRO_WORKFLOWS, "pr-checks.yml", "ci.yml", "composite-canary.yml"):
         raw = (WORKFLOWS / name).read_text()
         for match in re.finditer(r"uses:\s*(\S+)", raw):
             ref = match.group(1)
@@ -419,31 +422,91 @@ def test_js_gates_declare_no_toolkit_implementation_checkout():
 
 
 # ---------------------------------------------------------------------------
-# Self-dogfooding contract
+# Self-test harness + composite canary (D-0019)
 # ---------------------------------------------------------------------------
 
 
-def test_ci_dogfoods_same_commit_not_published_tag():
+def test_ci_self_test_runs_micro_workflows_not_the_composite():
+    """ci.yml is a self-test harness against the PR commit — it must not
+    call the composite: this repo is Python-only and the composite's JS
+    gate group defaults OFF (D-0013), so the called composite would render
+    three permanent Skipped checks on every toolkit PR."""
+    raw = (WORKFLOWS / "ci.yml").read_text()
+    assert "pr-checks.yml" not in raw, "ci.yml must not reference the composite"
     jobs = _jobs(_load("ci.yml"))
-    quality = jobs["quality"]
-    assert quality["uses"] == "./.github/workflows/pr-checks.yml"
-    with_ = quality["with"]
-    assert "${{ github.event.pull_request.head.sha }}" == with_["toolkit-ref"]
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in str(
-        with_["enable-llm-review"]
-    )
-    assert "coverage-floor" in with_
+    expected = {
+        "lint": "lint.yml",
+        "test": "test.yml",
+        "security": "security.yml",
+        "secretscan": "secret-scan.yml",
+        "llmreview": "llm-pr-review.yml",
+    }
+    assert set(jobs) == set(expected), f"unexpected ci.yml jobs: {sorted(jobs)}"
+    for job_id, workflow in expected.items():
+        assert jobs[job_id]["uses"] == f"./.github/workflows/{workflow}", job_id
+    for job_id in ("lint", "test", "security", "secretscan"):
+        assert "if" not in jobs[job_id], (
+            f"{job_id} must run unconditionally — a disabled job renders as Skipped"
+        )
+
+
+def test_ci_llm_review_gated_by_deterministic_gates_and_fork_guard():
+    """D-0001 cost gate + fork guard on the direct caller: the judges start
+    only when every deterministic gate is green (default needs success()
+    semantics — ci.yml has no gate toggles, so the composite's
+    success-or-skipped clauses have nothing to tolerate) and only for
+    same-repo PRs (fork PRs cannot access repository secrets)."""
+    llm = _jobs(_load("ci.yml"))["llmreview"]
+    assert llm["needs"] == ["lint", "test", "security", "secretscan"]
+    condition = str(llm["if"])
+    guard = "github.event.pull_request.head.repo.full_name == github.repository"
+    assert guard in condition, "llmreview must be fork-guarded"
+
+
+def test_ci_dogfoods_the_head_sha_in_implementation_checkouts():
+    """D-0007 on the direct caller: secret-scan and the judges must check
+    out THIS PR's implementation, not a published tag."""
+    for job_id in ("secretscan", "llmreview"):
+        with_ = _jobs(_load("ci.yml"))[job_id]["with"]
+        assert "${{ github.event.pull_request.head.sha }}" == with_["toolkit-ref"], (
+            f"ci.yml {job_id} must dogfood the PR's implementation"
+        )
 
 
 def test_self_check_lints_and_measures_the_judge_package():
     """D-0017: ruff/mypy/coverage run against the importable package too —
     the judge implementation left scripts/, so a scripts-only self-check
     would leave the moved code unlinted and unmeasured."""
-    with_ = _jobs(_load("ci.yml"))["quality"]["with"]
-    for key in ("lint-paths", "cov-paths"):
-        paths = str(with_[key]).split()
+    jobs = _jobs(_load("ci.yml"))
+    for job_id, key in (("lint", "lint-paths"), ("test", "cov-paths")):
+        paths = str(jobs[job_id]["with"][key]).split()
         assert "quality_gates_toolkit" in paths, f"ci.yml {key} must cover the package"
         assert "scripts" in paths, f"ci.yml {key} must keep covering scripts/"
+
+
+def test_composite_canary_triggers_on_schedule_and_dispatch_only():
+    """The canary must never add a check to a pull request — PR-event
+    composite runs are the consumers' business; the canary exists so the
+    nightly and pre-release path exercises the composite without touching
+    PR checks lists (D-0019)."""
+    triggers = _triggers(_load("composite-canary.yml"))
+    assert set(triggers) == {"schedule", "workflow_dispatch"}, (
+        f"canary triggers must be schedule+dispatch, got {sorted(triggers)}"
+    )
+
+
+def test_composite_canary_runs_the_composite_with_judges_disabled():
+    jobs = _jobs(_load("composite-canary.yml"))
+    assert set(jobs) == {"canary"}, "the canary runs exactly one composite call"
+    with_ = jobs["canary"]["with"]
+    assert jobs["canary"]["uses"] == "./.github/workflows/pr-checks.yml"
+    assert with_["enable-llm-review"] is False, (
+        "an unattended canary must never spend judge tokens"
+    )
+    assert with_["toolkit-ref"] == "${{ github.sha }}", (
+        "the canary must exercise the default-branch tip, not a published tag"
+    )
+    assert "coverage-floor" in with_, "coverage-floor is a REQUIRED composite input"
 
 
 def test_micro_workflows_use_least_privilege_permissions():

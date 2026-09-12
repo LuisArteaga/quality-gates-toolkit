@@ -604,3 +604,74 @@ changes — so it is neither renamed nor merged with the changelog.
 ### Amendments
 
 None.
+
+## D-0019 — Self-test harness on micro-workflows; composite verified by a scheduled canary
+
+- Date: 2026-09-12
+- Status: Accepted
+
+### Decision
+
+The toolkit's own `ci.yml` calls the micro-workflows directly (`lint`,
+`test`, `security`, `secretscan`, then the judges gated by the fork guard
+and the D-0001 needs ordering) with the PR head SHA as `toolkit-ref` — it
+is a self-test harness against the PR commit and deliberately loses the
+"reference consumer" role: no real consumer can reference the PR commit,
+so the self-caller was always a harness, not an exemplar. The composite
+keeps GitHub-side runtime verification through a new `composite-canary.yml`
+that triggers ONLY on `schedule` (nightly) + `workflow_dispatch`, runs the
+composite from the default-branch tip (`toolkit-ref: github.sha`) with the
+LLM review disabled, and is dispatched manually as the first step of the
+release checklist so a broken composite cannot reach a tag unexercised.
+Composite positioning is unchanged for Python-only and polyglot callers;
+single-language non-Python repositories are steered to the micro-workflow
+path, which is skip-free by construction. A sandbox consumer repository
+remains the designated future upgrade path for pre-merge and JS-path
+verification (recorded, not built here).
+
+### Rationale
+
+GitHub renders jobs statically: a job disabled by `if:` — including a job
+that calls a reusable workflow — always appears as `Skipped` in the checks
+list (it reports Success for branch protection), and no upstream mechanism
+hides it (community discussions 44490 and 72708, both open). With the JS
+gate group defaulting OFF (D-0013), every toolkit PR therefore wore three
+permanent `Skipped` checks. Calling the micro-workflows directly removes
+that noise from the toolkit's own checks list; the canary restores the
+composite's exercise without touching any PR checks list (a PR-event
+canary would reintroduce duplicate checks) and never spends judge tokens
+on an unattended schedule. The pre-tag dispatch also covers dormancy:
+GitHub auto-disables scheduled workflows in a public repository after 60
+days without repository activity (warning email to the last editor well
+before that), and a disabled workflow cannot be dispatched — so a broken
+or disabled composite surfaces before a tag is cut. The canary's
+permission shape follows the first composite consumer's finding: the
+caller must grant `pull-requests: write` even though the judge job is
+skipped, because escalation is validated statically before jobs start
+(ot-telemetry-engine PR #62). The cost gate (D-0001) needs no
+success-or-skipped clauses in `ci.yml` — it has no gate toggles, so the
+default `needs` success semantics already demand every deterministic gate
+green before the judges start.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- [community/44490](https://github.com/orgs/community/discussions/44490)
+  and [community/72708](https://github.com/orgs/community/discussions/72708)
+  — no native path/profile-aware handling for reusable-workflow jobs; the
+  skipped-check rendering is unavoidable, so the fix must be caller-side
+  topology.
+- [community/171037](https://github.com/orgs/community/discussions/171037)
+  — the sandbox-consumer pattern (enterprise pre-merge verification of
+  shared workflows), recorded as the future upgrade path.
+- [OpenAstronomy/github-actions-workflows](https://github.com/OpenAstronomy/github-actions-workflows)
+  — per-workflow catalog without an orchestrator; precedent for
+  single-responsibility workflows and the README decision matrix.
+- [GitHub blog: using reusable workflows](https://github.blog/developer-skills/github/using-reusable-workflows-github-actions/)
+  — decision-table documentation for overlapping mechanisms.
+- ot-telemetry-engine PR #62 — empirical permission-validation finding
+  (static escalation check even for skipped composite jobs).
+
