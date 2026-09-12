@@ -15,6 +15,8 @@ this public repository at a pinned ref (`toolkit-ref`).
 | Workflow | Purpose |
 |---|---|
 | `pr-checks.yml` | **Opinionated composite entry point.** Orchestrates all gates as jobs and centrally enforces the ordering policy (deterministic gates before LLM review — the cost gate). Language-scoped toggles (D-0013): Python gates on by default, JS gates opt-in. |
+| `python-checks.yml` | **Python language composite (D-0020).** The Python gate group as one `uses:` — skip-free for Python-only callers (no disabled-gate noise). Optional embedded LLM review (default off) and secret scan (default on). |
+| `js-checks.yml` | **JS language composite (D-0020).** The three JS gates as one `uses:` — skip-free for JS/TS callers. Optional embedded LLM review (default off) and secret scan (default on). |
 | `lint.yml` | ruff lint + format check + mypy with toolkit-pinned tool versions. Installs the caller project (`pip install -e ".[dev]" || pip install -e .`, best-effort) plus `extra-pip-packages` first, so mypy sees the caller's dependency surface. |
 | `test.yml` | pytest with coverage, floor enforcement (`coverage-floor` is required), uploads `coverage.json` as an artifact. Installs the caller via `pip install -e ".[dev]"` — strict, no fallback (D-0014): pytest comes from the caller's dev extra. |
 | `diff-coverage.yml` | 100% changed-line coverage gate (consumes the coverage artifact; PR events only). |
@@ -68,9 +70,10 @@ gates still expect the *caller* project to be self-contained:
 
 | Your repository | Entry point | Checks-list appearance |
 |---|---|---|
-| Python-only or Python + JS, wants the opinionated suite | Composite `pr-checks.yml` | Every **enabled** gate runs; disabled gates (the JS group by default) appear as `Skipped` |
-| Python-only, wants a skip-free checks list | Micro-workflows directly — the toolkit's own `ci.yml` is the live example (D-0019) | Every called gate runs |
-| Pure JS/TS | JS micro-workflows (`js-typecheck.yml`, `js-test.yml`, `js-lint.yml`) | Skip-free by construction — the composite's JS-only shape would show the six disabled Python gates as `Skipped` |
+| Python-only, wants one `uses:` | Composite `python-checks.yml` (D-0020) | Every gate runs — no `Skipped` entries by construction |
+| Pure JS/TS, wants one `uses:` | Composite `js-checks.yml` (D-0020) | Every gate runs — no `Skipped` entries by construction |
+| Polyglot (Python + JS), wants the opinionated suite | Composite `pr-checks.yml` | Every **enabled** gate runs; disabled gates (the JS group by default) appear as `Skipped` |
+| Skip-free with hand-picked gates | Micro-workflows directly — the toolkit's own `ci.yml` is the live example (D-0019) | Every called gate runs |
 
 GitHub Actions cannot hide a disabled job: jobs in a workflow file are
 static, and a job turned off by `if:` — including a job that calls a
@@ -78,10 +81,20 @@ reusable workflow — always renders as `Skipped` (it reports Success for
 branch protection, but the noise is real; upstream:
 [community/44490](https://github.com/orgs/community/discussions/44490),
 [community/72708](https://github.com/orgs/community/discussions/72708)).
-The composite stays the opinionated default for Python callers — three
-inert `Skipped` checks are the price of one `uses:` — while
-single-language repositories that want a clean checks list call the
-micro-workflows directly.
+The polyglot composite stays the opinionated default for polyglot callers —
+inert `Skipped` checks are the price of one `uses:` for the whole suite —
+while single-language repositories get the same one-call ergonomics
+skip-free through their language composite, and the micro-workflows remain
+the maximum-control path.
+
+**Exactly one judge per PR.** Wiring more than one composite on the same PR
+(e.g. `python-checks.yml` + `js-checks.yml` in a monorepo) means
+`enable-llm-review` — and any other language-agnostic gate you keep enabled
+in more than one composite, i.e. `enable-secret-scan` — must be turned on in
+**exactly one** of them (D-0020): the judge reviews the whole PR diff
+regardless of which composite invokes it, so one review per PR is both
+sufficient and cost-correct. Two enabled judges mean double cost and two
+verdict blocks.
 
 ## Quick start (composite)
 
@@ -108,6 +121,20 @@ permissions:
 
 A nested reusable workflow can narrow but never elevate the caller's token
 scope.
+
+Language composites (D-0020) are the skip-free variant for single-language
+repositories — same defaults, one language:
+
+```yaml
+jobs:
+  quality:
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/python-checks.yml@v1.6.0
+    with:
+      coverage-floor: 80
+```
+
+`js-checks.yml` takes no `coverage-floor` (no coverage artifact contract):
+its three JS gates default ON, plus secret scan on and the LLM review off.
 
 ### Language toggles
 
@@ -149,9 +176,10 @@ Python test gate is off. `secret-scan` is language-agnostic and stays on.
 
 That example demonstrates the toggle contract — for a *pure* JS/TS
 repository it is the noisy shape: all six disabled Python gates render as
-`Skipped` checks. Pure-JS repositories should call the JS micro-workflows
-directly instead (skip-free by construction — see
-[Which entry point?](#which-entry-point)).
+`Skipped` checks. Pure-JS repositories use the `js-checks.yml` language
+composite (skip-free with the same one-call ergonomics, D-0020) or call
+the JS micro-workflows directly — see
+[Which entry point?](#which-entry-point).
 
 ## Secrets
 
@@ -197,7 +225,7 @@ usage (`enable-llm-review: false`, the default) reads no secrets at all.
 
 Fork PRs cannot access repository secrets, so the LLM review can never
 authenticate for forked contributions. Enable it conditionally for same-repo
-PRs only — on the composite, pass the guard as the review toggle:
+PRs only — on a composite, pass the guard as the review toggle:
 
 ```yaml
 enable-llm-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
@@ -258,6 +286,33 @@ centrally — composing micro-workflows yourself means re-implementing it.
 
 Secrets: `openrouter-api-key` (needed when `enable-llm-review` is on) and
 `judge-token` (optional) — see [Secrets](#secrets).
+
+### Language composites (`python-checks.yml` / `js-checks.yml`)
+
+Per-language entry points (D-0020): each declares only its own language's
+knobs plus the judge plumbing. A composite defaults its own language's
+gates ON (the caller chose that entry point); `enable-llm-review` defaults
+`false` and `enable-secret-scan` `true` on both.
+
+| Input | Type | Default | Scope / purpose |
+|---|---|---|---|
+| `python-version` | string | `"3.12"` | python-checks — Python for lint, test, and security. |
+| `node-version` | string | `"22"` | js-checks — Node for the three JS gates. |
+| `lint-paths` | string | `"."` | python-checks — paths for ruff, mypy, and Semgrep. |
+| `cov-paths` | string | `"."` | python-checks — import paths measured with repeated `--cov` flags. New top-level packages must be added here (see [Troubleshooting](#troubleshooting)). |
+| `coverage-floor` | number | **required** | python-checks — minimum total coverage; a policy decision. |
+| `extra-pip-packages` | string | `"none"` | python-checks — as on the polyglot composite. |
+| `prefetch-tree-sitter` | boolean | `false` | python-checks — parser cache/prefetch for tests and judge enrichment. |
+| `enable-lint`, `enable-test`, `enable-security` | boolean | `true` | python-checks — Python gate group. |
+| `enable-semgrep`, `enable-pip-audit` | boolean | `true` | python-checks — sub-toggles inside the security gate. |
+| `enable-diff-gate` | boolean | `true` | python-checks — 100% changed-line coverage (pull_request events only). |
+| `enable-js-lint`, `enable-js-test`, `enable-js-typecheck` | boolean | `true` | js-checks — the JS gate group (needs a `package-lock.json`). |
+| `enable-secret-scan` | boolean | `true` | both — toolkit secret scanner (language-agnostic). |
+| `enable-llm-review` | boolean | `false` | both — LLM judges after all deterministic gates; pull_request events only. Enable in exactly one composite per PR (D-0020). |
+| `config-path` | string | `"config/factory.json"` | both — judge config path relative to the caller repository root. |
+| `diff-exclude` | string | `""` | both — space-separated git pathspecs excluded from the judge diff (e.g. `uv.lock package-lock.json`). |
+| `batch-budget-chars` | string | `""` (effective `200000`) | both — per-batch character budget for splitting the judge diff. Raise it (e.g. `500000`) so large PRs are judged whole — small batches make judges report "tests missing" for files whose tests landed in another batch. |
+| `toolkit-ref` | string | `"v1.6.0"` | both — ref of the Python-implementation checkout. Overrides are deliberate. |
 
 ### Micro-workflows
 
@@ -531,6 +586,9 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 
 - Fork PRs cannot access repository secrets; run the LLM review only for
   same-repo PRs (both gating patterns under [Fork PRs](#fork-prs)).
+- Enabling `enable-llm-review` on more than one composite in the same PR
+  produces two full judge reviews (double cost, two verdict blocks on one
+  thread). Keep it enabled in exactly one composite per PR (D-0020).
 - The toolkit's own CI passes its PR head SHA as `toolkit-ref` — that
   checkout target does not exist for fork PRs.
 - `pull_request_target` is deliberately not offered as a fork workaround

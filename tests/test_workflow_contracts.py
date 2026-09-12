@@ -26,6 +26,10 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   defaults OFF so existing Python callers are unaffected, and the cost gate
   spans both language groups (every enabled deterministic gate precedes the
   LLM review).
+- D-0020 per-language composites: python-checks.yml / js-checks.yml restate
+  the ordering policy internally, default their own language's gates ON,
+  keep the judge optional (exactly-one rule across composites), and the
+  polyglot composite neither grows nor references them.
 """
 
 from pathlib import Path
@@ -46,6 +50,7 @@ MICRO_WORKFLOWS = [
     "js-typecheck.yml",
     "js-lint.yml",
 ]
+LANGUAGE_COMPOSITES = ["python-checks.yml", "js-checks.yml"]
 TOOLKIT_REPO = "LuisArteaga/quality-gates-toolkit"
 TOOLKIT_CHECKOUT_PATH = "toolkit"
 CALLER_CHECKOUT_PATH = "repo"
@@ -291,7 +296,13 @@ def test_diff_coverage_runs_only_after_test_success_and_on_pr_events():
 
 
 def test_no_secrets_inherit_anywhere():
-    for name in [*MICRO_WORKFLOWS, "pr-checks.yml", "ci.yml", "composite-canary.yml"]:
+    for name in [
+        *MICRO_WORKFLOWS,
+        *LANGUAGE_COMPOSITES,
+        "pr-checks.yml",
+        "ci.yml",
+        "composite-canary.yml",
+    ]:
         raw = (WORKFLOWS / name).read_text()
         assert "secrets: inherit" not in raw, f"{name} must forward secrets explicitly"
 
@@ -365,7 +376,13 @@ def test_coverage_artifact_handoff_from_test_to_diff_coverage():
 def test_third_party_actions_are_sha_pinned():
     import re
 
-    for name in (*MICRO_WORKFLOWS, "pr-checks.yml", "ci.yml", "composite-canary.yml"):
+    for name in (
+        *MICRO_WORKFLOWS,
+        *LANGUAGE_COMPOSITES,
+        "pr-checks.yml",
+        "ci.yml",
+        "composite-canary.yml",
+    ):
         raw = (WORKFLOWS / name).read_text()
         for match in re.finditer(r"uses:\s*(\S+)", raw):
             ref = match.group(1)
@@ -419,6 +436,170 @@ def test_js_gates_declare_no_toolkit_implementation_checkout():
         raw = (WORKFLOWS / name).read_text()
         assert "toolkit-ref" not in raw, f"{name} must not take a toolkit-ref input"
         assert TOOLKIT_REPO not in raw, f"{name} must not check out the toolkit"
+
+
+# ---------------------------------------------------------------------------
+# D-0020: per-language composites
+# ---------------------------------------------------------------------------
+
+
+def test_language_composites_are_callable_only():
+    for name in LANGUAGE_COMPOSITES:
+        triggers = _triggers(_load(name))
+        assert set(triggers) == {"workflow_call"}, (
+            f"{name} must be callable only (triggers: {sorted(triggers)})"
+        )
+
+
+def test_language_composites_call_micro_workflows_via_relative_refs():
+    for name in LANGUAGE_COMPOSITES:
+        jobs = _jobs(_load(name))
+        for job_id, job in jobs.items():
+            uses = job.get("uses", "")
+            if uses:
+                assert uses.startswith("./.github/workflows/"), (
+                    f"{name} job '{job_id}' must use a relative internal ref, got {uses}"
+                )
+
+
+def test_python_checks_ships_the_python_gate_group():
+    jobs = _jobs(_load("python-checks.yml"))
+    assert set(jobs) == {
+        "lint",
+        "test",
+        "security",
+        "secretscan",
+        "diffcoverage",
+        "llmreview",
+    }
+    inputs = _call_inputs(_load("python-checks.yml"))
+    for name in (
+        "enable-lint",
+        "enable-test",
+        "enable-security",
+        "enable-semgrep",
+        "enable-pip-audit",
+        "enable-secret-scan",
+        "enable-diff-gate",
+    ):
+        assert inputs[name].get("default") is True, name
+    floor = inputs["coverage-floor"]
+    assert floor.get("required") is True, "coverage-floor is a REQUIRED policy input"
+    assert "default" not in floor, "coverage-floor must ship no default"
+    # A language composite declares only its own language's knobs.
+    assert "node-version" not in inputs, "python-checks.yml has no JS jobs"
+    assert jobs["diffcoverage"]["needs"] == ["test"]
+    with_ = jobs["llmreview"]["with"]
+    assert with_["prefetch-tree-sitter"] == "${{ inputs.prefetch-tree-sitter }}"
+
+
+def test_js_checks_ships_the_js_gate_group():
+    """D-0020: on the JS language composite the JS toggles default ON — the
+    caller chose the JS entry point, inverting the polyglot's JS-OFF
+    default (D-0013). No coverage contract: the JS harness owns the
+    environment and has no coverage.json artifact handoff."""
+    jobs = _jobs(_load("js-checks.yml"))
+    assert set(jobs) == {
+        "js-lint",
+        "js-test",
+        "js-typecheck",
+        "secretscan",
+        "llmreview",
+    }
+    inputs = _call_inputs(_load("js-checks.yml"))
+    for name in ("enable-js-lint", "enable-js-test", "enable-js-typecheck"):
+        toggle = inputs[name]
+        assert toggle.get("type") == "boolean", name
+        assert toggle.get("default") is True, (
+            f"{name} defaults ON on the JS language composite (skip-free by construction)"
+        )
+    assert "coverage-floor" not in inputs, (
+        "js-checks.yml has no coverage artifact contract"
+    )
+    assert "python-version" not in inputs, "js-checks.yml has no Python gates"
+    assert "enable-diff-gate" not in inputs
+
+
+def test_language_composites_default_language_agnostic_gates():
+    for name in LANGUAGE_COMPOSITES:
+        inputs = _call_inputs(_load(name))
+        assert inputs["enable-llm-review"]["default"] is False, (
+            f"{name}: the judges must stay opt-in"
+        )
+        assert inputs["enable-secret-scan"]["default"] is True, (
+            f"{name}: secret scanning is language-agnostic and on by default"
+        )
+
+
+def test_language_composites_llm_review_gated_by_deterministic_gates():
+    """D-0001 restated internally per language composite (the accepted
+    D-0020 trade-off): the judges run only after every gate of THAT
+    composite is success-or-skipped, plus the D-0011 pull_request guard."""
+    expected = {
+        "python-checks.yml": ("lint", "test", "security", "secretscan", "diffcoverage"),
+        "js-checks.yml": ("js-lint", "js-test", "js-typecheck", "secretscan"),
+    }
+    for name, gates in expected.items():
+        llm = _jobs(_load(name))["llmreview"]
+        assert set(llm["needs"]) == set(gates), name
+        condition = str(llm["if"])
+        for gate in gates:
+            assert f"needs.{gate}.result == 'success'" in condition, (name, gate)
+            assert f"needs.{gate}.result == 'skipped'" in condition, (name, gate)
+        assert "inputs.enable-llm-review" in condition, name
+        assert "!cancelled()" in condition, name
+        assert "github.event_name == 'pull_request'" in condition, name
+
+
+def test_language_composites_forward_the_judge_contract():
+    """D-0002/D-0005/D-0007 plumbing on the embedded judge job: explicit
+    secret forwarding, the same-tag toolkit checkout, and the judge knobs."""
+    for name in LANGUAGE_COMPOSITES:
+        llm = _jobs(_load(name))["llmreview"]
+        assert llm["secrets"] == {
+            "openrouter-api-key": "${{ secrets.openrouter-api-key }}",
+            "judge-token": "${{ secrets.judge-token }}",
+        }, name
+        with_ = llm["with"]
+        assert with_["toolkit-ref"] == "${{ inputs.toolkit-ref }}", name
+        assert with_["config-path"] == "${{ inputs.config-path }}", name
+        assert with_["diff-exclude"] == "${{ inputs.diff-exclude }}", name
+        assert with_["batch-budget-chars"] == "${{ inputs.batch-budget-chars }}", name
+
+
+def test_language_composites_forward_toolkit_ref_to_gates_that_need_it():
+    for name in LANGUAGE_COMPOSITES:
+        jobs = _jobs(_load(name))
+        assert (
+            jobs["secretscan"]["with"]["toolkit-ref"] == "${{ inputs.toolkit-ref }}"
+        ), name
+        diff = jobs.get("diffcoverage")
+        if diff is not None:
+            assert diff["with"]["toolkit-ref"] == "${{ inputs.toolkit-ref }}", name
+
+
+def test_polyglot_composite_does_not_grow_language_toggles():
+    """D-0020: new languages add composite FILES — pr-checks.yml keeps its
+    exact job set and gains no references to the language composites."""
+    jobs = _jobs(_load("pr-checks.yml"))
+    assert set(jobs) == {
+        "lint",
+        "test",
+        "security",
+        "js-lint",
+        "js-test",
+        "js-typecheck",
+        "secretscan",
+        "diffcoverage",
+        "llmreview",
+    }
+    raw = (WORKFLOWS / "pr-checks.yml").read_text()
+    assert "python-checks" not in raw, (
+        "pr-checks.yml must not reference language composites"
+    )
+    assert "js-checks" not in raw, (
+        "pr-checks.yml must not reference language composites"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +713,14 @@ def test_micro_workflows_use_least_privilege_permissions():
     # Only the review workflow may write.
     llm_permissions = _load("llm-pr-review.yml")["permissions"]
     assert llm_permissions == {"contents": "read", "pull-requests": "write"}
+    # Language composites follow the same shape as the polyglot composite:
+    # contents: read at the top level, one writing job (the judges).
+    for name in LANGUAGE_COMPOSITES:
+        assert _load(name).get("permissions") == {"contents": "read"}, name
+        llm = _jobs(_load(name))["llmreview"]
+        assert llm["permissions"] == {"contents": "read", "pull-requests": "write"}, (
+            name
+        )
 
 
 # ---------------------------------------------------------------------------

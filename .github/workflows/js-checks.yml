@@ -1,0 +1,161 @@
+name: JS checks (composite)
+
+# Per-language composite for JavaScript/TypeScript repositories (D-0020):
+# the three JS gates in one reusable call with zero disabled-gate noise — every
+# job this composite declares belongs to the JS group (plus the two
+# language-agnostic opt-ins), so a JS-only caller's checks list has no
+# `Skipped` entries by construction.
+#
+# Harness contract (D-0012): the toolkit owns the environment (Node runtime,
+# npm ci, cache) and the project owns the tools — the caller's
+# package-lock.json plus fixed `npm run` scripts. No coverage/diff-coverage
+# job: the JS harness has no coverage.json artifact contract.
+#
+# The ordering policy is restated here internally (accepted D-0020
+# trade-off): deterministic gates before the LLM review (D-0001), judges
+# only on pull_request events (D-0011), explicit secret forwarding
+# (D-0005). Language-agnostic gates are opt-in per composite — a caller
+# wiring several language composites on one PR must enable them in EXACTLY
+# ONE composite (the judge reviews the whole PR diff regardless of which
+# composite invokes it; a second enabled review would double the cost and
+# post a second verdict block).
+#
+# Internal references are RELATIVE (./.github/workflows/...) so the nested
+# workflows resolve from the SAME commit/tag as this composite — no version
+# drift between js-checks.yml@v1.6.0 and its micro-workflows. toolkit-ref
+# only selects the ref of the second checkout (the Python implementation
+# behind secret-scan and the judges).
+#
+# The polyglot composite (pr-checks.yml) stays the single-entry option for
+# polyglot repositories; new languages ship a NEW composite, not new
+# toggles there. Defaults are NEUTRAL public contract (D-0004): this
+# composite's JS toggles default ON because the caller chose the JS entry
+# point — a caller wiring it without a package-lock.json gets the D-0012
+# loud npm failure, which is the correct signal for a JS-only composite.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version used by the JS gates (js-lint, js-test, js-typecheck).
+        type: string
+        default: "22"
+      enable-js-lint:
+        description: Run the caller's `npm run lint` (js-lint.yml). Requires a package-lock.json in the caller root — npm ci fails loudly without one.
+        type: boolean
+        default: true
+      enable-js-test:
+        description: Run the caller's `npm test` (js-test.yml). Requires a package-lock.json in the caller root — npm ci fails loudly without one.
+        type: boolean
+        default: true
+      enable-js-typecheck:
+        description: Run the caller's `npm run typecheck` (js-typecheck.yml). Requires a package-lock.json in the caller root — npm ci fails loudly without one.
+        type: boolean
+        default: true
+      enable-secret-scan:
+        description: Run the toolkit secret scanner (secret-scan.yml).
+        type: boolean
+        default: true
+      enable-llm-review:
+        description: Run the LLM judges after all deterministic gates are green.
+        type: boolean
+        default: false
+      config-path:
+        description: Judge config path relative to the caller repository root.
+        type: string
+        default: "config/factory.json"
+      diff-exclude:
+        description: Space-separated git pathspecs excluded from the judge diff.
+        type: string
+        default: ""
+      batch-budget-chars:
+        description: >-
+          Per-batch character budget for splitting the judge diff. Raise it
+          (e.g. 500000) so large diffs are judged in a single batch —
+          per-batch judges otherwise only see their own slice and may
+          wrongly report "tests missing" for files whose tests landed in
+          another batch.
+        type: string
+        default: ""
+      toolkit-ref:
+        description: Toolkit ref for the Python-implementation checkout.
+        type: string
+        default: "v1.6.0"
+    secrets:
+      openrouter-api-key:
+        description: OpenRouter API key for the LLM judges (only needed when enable-llm-review).
+        required: false
+      judge-token:
+        description: Optional review-posting token; falls back to github.token.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  js-lint:
+    if: inputs.enable-js-lint
+    uses: ./.github/workflows/js-lint.yml
+    permissions:
+      contents: read
+    with:
+      node-version: ${{ inputs.node-version }}
+
+  js-test:
+    if: inputs.enable-js-test
+    uses: ./.github/workflows/js-test.yml
+    permissions:
+      contents: read
+    with:
+      node-version: ${{ inputs.node-version }}
+
+  js-typecheck:
+    if: inputs.enable-js-typecheck
+    uses: ./.github/workflows/js-typecheck.yml
+    permissions:
+      contents: read
+    with:
+      node-version: ${{ inputs.node-version }}
+
+  secretscan:
+    if: inputs.enable-secret-scan
+    uses: ./.github/workflows/secret-scan.yml
+    permissions:
+      contents: read
+    with:
+      toolkit-ref: ${{ inputs.toolkit-ref }}
+
+  llmreview:
+    # The cost gate: run ONLY when every ENABLED deterministic gate is
+    # green. A disabled gate shows up as 'skipped' and imposes no
+    # constraint (success OR skipped for every gate) — `!cancelled()`
+    # neutralizes the default needs-failure suppression so this expression
+    # is the single source of truth for the ordering policy.
+    #
+    # Judges also need a pull request to review: the judge workflow
+    # fail-fasts on an empty PR number, so a caller triggered on other
+    # events (e.g. push) skips this job instead of turning permanently
+    # red on every run.
+    needs: [js-lint, js-test, js-typecheck, secretscan]
+    if: >-
+      ${{ inputs.enable-llm-review &&
+          !cancelled() &&
+          (needs.js-lint.result == 'success' || needs.js-lint.result == 'skipped') &&
+          (needs.js-test.result == 'success' || needs.js-test.result == 'skipped') &&
+          (needs.js-typecheck.result == 'success' || needs.js-typecheck.result == 'skipped') &&
+          (needs.secretscan.result == 'success' || needs.secretscan.result == 'skipped') &&
+          github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/llm-pr-review.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      toolkit-ref: ${{ inputs.toolkit-ref }}
+      config-path: ${{ inputs.config-path }}
+      diff-exclude: ${{ inputs.diff-exclude }}
+      batch-budget-chars: ${{ inputs.batch-budget-chars }}
+    secrets:
+      # Explicit forwarding only — blanket secret propagation is
+      # deliberately not used in a public product.
+      openrouter-api-key: ${{ secrets.openrouter-api-key }}
+      judge-token: ${{ secrets.judge-token }}
