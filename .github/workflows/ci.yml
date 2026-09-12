@@ -1,21 +1,37 @@
 name: CI
 
-# Self-caller dogfooding: this repository's pull requests run its OWN
-# pr-checks composite from the PR commit (relative ./ reference — never a
-# published tag, which would test the released version instead of the
-# changes under review).
+# Self-test harness (D-0019): this repository's pull requests run its OWN
+# micro-workflows directly from the PR commit (relative ./ references —
+# never a published tag, which would test the released version instead of
+# the changes under review). This caller is deliberately NOT a reference
+# consumer: it tests the PR commit, which no real consumer can reference.
+# The composite entry point keeps its GitHub-side runtime verification via
+# the nightly composite-canary.yml instead.
+#
+# Direct micro-calls keep this repo's PR checks list skip-free: this repo
+# is Python-only and the composite's JS gate group defaults OFF (D-0013),
+# so calling the composite here would render js-lint/js-test/js-typecheck
+# as permanent "Skipped" checks (GitHub gives no way to hide a disabled
+# job — community discussions 44490 and 72708).
 #
 # toolkit-ref passes the PR head SHA so the second checkout inside the
-# micro-workflows (secret scan, diff gate, judges) also uses THIS PR's
-# scripts, not the published tag. Same-repo assumption: for fork PRs the
-# head SHA does not exist in this repository and the checkout would fail —
-# documented limitation, revisit if fork contributions become real.
+# micro-workflows (secret scan, judges) also uses THIS PR's scripts, not
+# the published tag. Same-repo assumption: for fork PRs the head SHA does
+# not exist in this repository and the checkout would fail — documented
+# limitation, revisit if fork contributions become real.
 #
 # LLM review only runs for same-repo PRs: fork PRs have no access to
 # repository secrets, and must not fail just because the OpenRouter key is
-# (correctly) unavailable to them.
+# (correctly) unavailable to them. The needs list is the D-0001 cost gate:
+# with default success() semantics the judges start only after every
+# deterministic gate is green (ci.yml has no gate toggles, so the
+# composite's success-or-skipped clauses have nothing to tolerate).
 #
-# toolkit's own policy values (this caller is the reference consumer):
+# Deliberately NO diff-coverage job — the D-0008 bootstrap carve-out:
+# ported tooling predates changed-line coverage discipline; the
+# total-coverage floor stays ON. Re-enable per the D-0008 follow-up issue.
+#
+# toolkit's own policy values:
 # coverage-floor 80, tree-sitter prefetch on (enrichment tests parse code),
 # LLM review on for trusted PRs with the trusted default inputs.
 
@@ -28,26 +44,57 @@ permissions:
   pull-requests: write
 
 jobs:
-  quality:
-    uses: ./.github/workflows/pr-checks.yml
+  lint:
+    uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
     with:
       python-version: "3.12"
       # D-0017: the judge implementation moved to the importable
       # quality_gates_toolkit package; the self-check must cover both
       # packages (scripts/ keeps the console script + compat shims).
       lint-paths: "scripts quality_gates_toolkit"
+
+  test:
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+    with:
+      python-version: "3.12"
       cov-paths: "scripts quality_gates_toolkit"
       coverage-floor: 80
-      # Bootstrap carve-out (D-0008): ported tooling predates changed-line
-      # coverage discipline; total-coverage floor stays ON. Re-enable per
-      # the D-0008 follow-up issue.
-      enable-diff-gate: false
       prefetch-tree-sitter: true
-      enable-llm-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+
+  security:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+    with:
+      python-version: "3.12"
+      # The composite forwards lint-paths to the security scan; mirror that
+      # here so Semgrep covers the same two packages.
+      scan-paths: "scripts quality_gates_toolkit"
+
+  secretscan:
+    uses: ./.github/workflows/secret-scan.yml
+    permissions:
+      contents: read
+    with:
+      toolkit-ref: ${{ github.event.pull_request.head.sha }}
+
+  llmreview:
+    needs: [lint, test, security, secretscan]
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/llm-pr-review.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
       toolkit-ref: ${{ github.event.pull_request.head.sha }}
       # The toolkit repo ships no config/factory.json (only the documented
       # example), so point the judges at the example config.
       config-path: config/factory.example.json
+      prefetch-tree-sitter: true
       # Single-batch judging for the large bootstrap diff: per-batch judges
       # only see their own slice of the file list and would otherwise report
       # "no tests" for production files whose tests landed in another batch.
