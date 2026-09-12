@@ -17,7 +17,7 @@ name: Python checks (composite)
 #
 # Internal references are RELATIVE (./.github/workflows/...) so the nested
 # workflows resolve from the SAME commit/tag as this composite — no version
-# drift between python-checks.yml@v1.6.0 and its micro-workflows.
+# drift between python-checks.yml@v1.7.0 and its micro-workflows.
 # toolkit-ref only selects the ref of the second checkout (the Python
 # implementation).
 #
@@ -109,7 +109,7 @@ on:
       toolkit-ref:
         description: Toolkit ref for the Python-implementation checkout.
         type: string
-        default: "v1.6.0"
+        default: "v1.7.0"
     secrets:
       openrouter-api-key:
         description: OpenRouter API key for the LLM judges (only needed when enable-llm-review).
