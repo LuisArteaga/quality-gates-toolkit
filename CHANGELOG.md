@@ -10,6 +10,18 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.7.0] - 2026-09-12
+
+### Added
+
+- Per-language composite entry points: `python-checks.yml` (lint, test,
+  security, secret-scan, diff-coverage, optional LLM review) and
+  `js-checks.yml` (the three JS gates, optional secret-scan and LLM review).
+  Monolingual callers get the one-call ergonomics with zero `Skipped`
+  entries; new languages add composite files, not polyglot toggles; the
+  polyglot composite stays as-is; exactly-one judge rule across composites
+  (D-0020, PR #36).
+
 ## [1.6.0] - 2026-09-11
 
 Combined release: the tag train skips 1.5.0 — both pending features below
@@ -118,7 +130,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.6.0...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.4.0...v1.6.0
 [1.4.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.2.0...v1.3.0
