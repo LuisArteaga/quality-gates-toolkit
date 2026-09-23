@@ -18,8 +18,9 @@ name: Python checks (composite)
 # Internal references are RELATIVE (./.github/workflows/...) so the nested
 # workflows resolve from the SAME commit/tag as this composite — no version
 # drift between python-checks.yml@v1.8.3 and its micro-workflows.
-# toolkit-ref only selects the ref of the second checkout (the Python
-# implementation).
+# toolkit-ref selects the ref of the toolkit checkouts (the Python
+# implementation: the secret scanner, the judges, and the Semgrep wrapper
+# that security.yml runs).
 #
 # The polyglot composite (pr-checks.yml) stays the single-entry option for
 # polyglot repositories; new languages ship a NEW composite, not new
@@ -154,6 +155,7 @@ jobs:
       scan-paths: ${{ inputs.lint-paths }}
       enable-semgrep: ${{ inputs.enable-semgrep }}
       enable-pip-audit: ${{ inputs.enable-pip-audit }}
+      toolkit-ref: ${{ inputs.toolkit-ref }}
 
   secretscan:
     if: inputs.enable-secret-scan

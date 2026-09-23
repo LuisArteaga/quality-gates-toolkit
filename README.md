@@ -20,7 +20,7 @@ this public repository at a pinned ref (`toolkit-ref`).
 | `lint.yml` | ruff lint + format check + mypy with toolkit-pinned tool versions. Installs the caller project (`pip install -e ".[dev]" || pip install -e .`, best-effort) plus `extra-pip-packages` first, so mypy sees the caller's dependency surface. |
 | `test.yml` | pytest with coverage, floor enforcement (`coverage-floor` is required), uploads `coverage.json` as an artifact. Installs the caller via `pip install -e ".[dev]"` — strict, no fallback (D-0014): pytest comes from the caller's dev extra. |
 | `diff-coverage.yml` | 100% changed-line coverage gate (consumes the coverage artifact; PR events only). |
-| `security.yml` | Semgrep + pip-audit. |
+| `security.yml` | Semgrep + pip-audit. Semgrep runs through the toolkit's `semgrep-scan` wrapper, which retries a failed ruleset fetch a bounded number of times (D-0025). |
 | `secret-scan.yml` | The toolkit's own stdlib secret scanner over all tracked files. Best-effort regex detection — not a Gitleaks replacement; pair it with Gitleaks for defense in depth if you want broader coverage. |
 | `llm-pr-review.yml` | LLM judges over the PR diff, posting one combined review. Requires `openrouter-api-key`. |
 | `js-test.yml` | Runs the caller's `npm test` on a caller-chosen Node version. Harness-only (D-0012): the project owns the test runner via `package.json`. |
@@ -34,7 +34,9 @@ implementation (`review.py` plus support modules `judge_config.py`,
 `telemetry.py`, `redaction.py`, `enrichment.py`) — see
 [Importable judge API](#importable-judge-api). The `scripts` package keeps
 the standalone tools `diff_coverage_gate.py` and `secret_scan.py` (the
-console script behind the `secret-scan` pre-commit hook) plus
+console script behind the `secret-scan` pre-commit hook), their sibling
+`semgrep_scan.py` (the `semgrep-scan` console script: `semgrep scan` plus
+the bounded ruleset-fetch retry, D-0025), plus
 backward-compatibility shims for the moved modules (D-0017).
 `enrichment.py` optionally uses `tree-sitter-language-pack` (dev extra)
 for enclosing-function-context enrichment and degrades gracefully without
@@ -296,7 +298,7 @@ centrally — composing micro-workflows yourself means re-implementing it.
 | `config-path` | string | `"config/factory.json"` | Judge config path relative to the caller repository root. |
 | `diff-exclude` | string | `""` | Space-separated git pathspecs excluded from the judge diff (e.g. `uv.lock package-lock.json`). |
 | `batch-budget-chars` | string | `""` (effective `200000`) | Per-batch character budget for splitting the judge diff. Raise it (e.g. `500000`) so large PRs are judged whole — small batches make judges report "tests missing" for files whose tests landed in another batch. |
-| `toolkit-ref` | string | `"v1.8.3"` | Ref of the Python-implementation checkout. Overrides are deliberate. |
+| `toolkit-ref` | string | `"v1.8.3"` | Ref of the toolkit checkout — secret scanner, judges, and the Semgrep wrapper `security.yml` runs. Overrides are deliberate. |
 
 Secrets: `openrouter-api-key` (needed when `enable-llm-review` is on) and
 `judge-token` (optional) — see [Secrets](#secrets).
@@ -326,7 +328,7 @@ gates ON (the caller chose that entry point); `enable-llm-review` defaults
 | `config-path` | string | `"config/factory.json"` | both — judge config path relative to the caller repository root. |
 | `diff-exclude` | string | `""` | both — space-separated git pathspecs excluded from the judge diff (e.g. `uv.lock package-lock.json`). |
 | `batch-budget-chars` | string | `""` (effective `200000`) | both — per-batch character budget for splitting the judge diff. Raise it (e.g. `500000`) so large PRs are judged whole — small batches make judges report "tests missing" for files whose tests landed in another batch. |
-| `toolkit-ref` | string | `"v1.8.3"` | both — ref of the Python-implementation checkout. Overrides are deliberate. |
+| `toolkit-ref` | string | `"v1.8.3"` | both — ref of the toolkit checkout — secret scanner, judges, and the Semgrep wrapper `security.yml` runs. Overrides are deliberate. |
 
 ### Micro-workflows
 
@@ -334,7 +336,7 @@ gates ON (the caller chose that entry point); `enable-llm-review` defaults
 |---|---|---|
 | `lint.yml` | `python-version` `"3.12"` · `lint-paths` `"."` · `extra-pip-packages` `"none"` | — |
 | `test.yml` | `python-version` `"3.12"` · `cov-paths` `"."` · `coverage-floor` (required) · `extra-pip-packages` `"none"` · `prefetch-tree-sitter` `false` | — |
-| `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `enable-semgrep` `true` · `enable-pip-audit` `true` | — |
+| `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `enable-semgrep` `true` · `enable-pip-audit` `true` · `toolkit-ref` `"v1.8.3"` | — |
 | `secret-scan.yml` | `toolkit-ref` `"v1.8.3"` | — |
 | `diff-coverage.yml` | `toolkit-ref` `"v1.8.3"` · `coverage-artifact` `"coverage-json"` | — |
 | `llm-pr-review.yml` | `toolkit-ref` `"v1.8.3"` · `config-path` `"config/factory.json"` · `diff-exclude` `""` · `prefetch-tree-sitter` `false` · `batch-budget-chars` `""` | `openrouter-api-key` (required) · `judge-token` (optional) |
@@ -574,7 +576,7 @@ Hook ownership split (D-0016) — version ownership follows dependency need:
 |---|---|---|---|
 | `secret-scan` | `python` | toolkit-pinned | stdlib scanner in the isolated hook env; no consumer venv needed. |
 | `mypy` | `system` | consumer-owned | runs `mypy` from your project environment; pass target paths via `args` (e.g. `args: ["src/"]`). |
-| `semgrep` | `python` | toolkit-pinned (`semgrep==1.177.0`) | `semgrep scan`; supply `--config` and paths via `args`. |
+| `semgrep` | `python` | toolkit-pinned (`semgrep==1.177.0`) | runs the toolkit's `semgrep-scan` wrapper — `semgrep scan` plus the ruleset-fetch retry (D-0025, see [Semgrep ruleset fetch](#semgrep-ruleset-fetch)); supply `--config` and paths via `args`. |
 | `pip-audit` | `python` | toolkit-pinned (`pip-audit==2.10.1`) | supply arguments via `args` (e.g. `-r requirements.txt`). |
 | `js-typecheck` / `js-test` / `js-lint` | `system` | consumer-owned | fixed npm scripts, full-project (see [JavaScript / TypeScript gates](#javascript--typescript-gates)). |
 
@@ -587,6 +589,35 @@ with `requires a different Python`. `mypy` is deliberately
 `language: system`: type checking needs your project's dependency surface,
 and an isolated environment would fail on every third-party import — the
 same reason the js-* hooks run `npm` from your environment.
+
+### Semgrep ruleset fetch
+
+The `semgrep` gate behaves identically on both surfaces: the hook and
+`security.yml` run the same wrapper (`scripts/semgrep_scan.py`), so one
+policy covers local commits and CI (D-0025). The wrapper is `semgrep scan`
+plus a bounded retry of the *configuration* load.
+
+- **The ruleset is a live registry artifact.** `--config=auto` (the
+  documented contract, and what `security.yml` passes) resolves its
+  ruleset on `semgrep.dev` at run time — pinning the ruleset *name*
+  (`p/default`, the current target of `/c/auto`) does not change that. A
+  registry config updates on Semgrep's schedule, so a previously-green
+  commit can gain findings with no code change: that is retroactive
+  coverage working as intended, not a flake.
+- **A failed fetch is not a finding.** The fetch is unauthenticated and
+  can be rate-limited (observed: `HTTP 403`). Semgrep then exits 7 — the
+  same code it uses for a genuinely invalid ruleset — so the wrapper
+  retries that outcome twice, 2 s and 5 s apart, and reports each attempt
+  on stderr as `[semgrep-scan] …`. The bound is small on purpose: a real
+  configuration error costs a few extra seconds, while a transient one is
+  gone. The retry does not depend on semgrep's message, because `--quiet`
+  suppresses it while leaving the exit code at 7.
+- **Nothing is hidden.** The wrapper replays semgrep's output verbatim and
+  exits with the last attempt's status, so a failure that survives the
+  retries reaches you unchanged (the same `exit 7`, the same diagnostics
+  [Troubleshooting](#troubleshooting) describes).
+- **Offline environments** pay the retry bound once and then fail as
+  before: the gate is still closed, just delayed by ~7 s.
 
 Two loud-fail paths to expect:
 
@@ -636,6 +667,12 @@ Two loud-fail paths to expect:
   the auto route; the KPI table's **Timeouts** column shows how often that
   happened. Lower the knob if a route is consistently slow, or drop the
   pinned `routing` for that node so OpenRouter can fail over per request.
+- **Semgrep failed with `exit code 7` and no message** — the ruleset could
+  not be loaded (a transient registry failure), not a problem with your
+  rules. The wrapper retried twice before reporting it; a re-run usually
+  passes — see [Semgrep ruleset fetch](#semgrep-ruleset-fetch). If you
+  passed `--quiet` in the hook `args`, drop it to see semgrep's own
+  `[ERROR] Failed to download configuration …` line.
 - **secret-scan false positive** — there is deliberately no inline
   suppression (a consumer-side skip mechanism would weaken the scanner).
   Token-shape fixes (e.g. the npm integrity-hash suppression, D-0010) ship
@@ -666,7 +703,8 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 ## Versioning
 
 - `uses:` pins an immutable release tag (e.g. `@v1.8.3`); `toolkit-ref`
-  (default = that same tag) selects the Python implementation checkout.
+  (default = that same tag) selects the toolkit's Python-artifact checkout
+  — secret scanner, judges, and the Semgrep wrapper `security.yml` runs.
   Overrides are deliberate.
 - The `pyproject.toml` version field tracks the same release train (bumped
   together with the toolkit-ref pin sites in each release PR) and names the

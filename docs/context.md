@@ -16,6 +16,9 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   log and uploaded as a failure-path artifact instead of being discarded
   (D-0024).
 - `diff_coverage_gate.py`, `secret_scan.py` are the deterministic gates.
+  `semgrep_scan.py` wraps the external Semgrep scanner with the bounded
+  ruleset-fetch retry that the pre-commit hook and `security.yml` both run
+  (D-0025).
 - `judge_config.py` resolves per-judge model/routing configuration.
 - `telemetry.py` provides tracing for the review run: OpenTelemetry with
   no-op degradation when the SDK is absent, local JSONL span logging, and

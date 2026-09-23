@@ -1168,3 +1168,128 @@ None.
   half of the step condition expressible at step level; the function resolves
   patterns against `GITHUB_WORKSPACE`
   ([expressions reference](https://docs.github.com/actions/reference/evaluate-expressions-in-workflows-and-actions)).
+
+## D-0025 — A failed Semgrep ruleset fetch is retried, bounded, on both surfaces
+
+- Date: 2026-09-23
+- Status: Accepted
+
+### Decision
+
+The Semgrep gate resolves its ruleset on `semgrep.dev` at run time
+(`--config=auto` is the documented contract and what `security.yml` passes).
+A failed fetch is a network condition, not a finding, so it no longer fails
+the gate outright:
+
+1. **One wrapper owns the policy.** `scripts/semgrep_scan.py` (console script
+   `semgrep-scan`) is `semgrep scan` plus a bounded retry of the
+   *configuration* load. The pre-commit hook runs it as a console script;
+   `security.yml` runs the same file from the toolkit checkout. The policy is
+   never re-implemented in YAML — two copies that can drift is the failure
+   class D-0012/D-0016/D-0017 exist to prevent, and a shell loop in a workflow
+   step is not reachable by the test suite.
+2. **The retry keys on the configuration bucket, not on the message.** Semgrep
+   exits 7 both for an invalid ruleset and for a ruleset it could not fetch,
+   and `--quiet` keeps that exit code while suppressing the
+   `[ERROR] Failed to download configuration …` line — so a message-only
+   predicate would miss exactly the reported case. The message is still read,
+   only to *name the cause* in the log. Semgrep's transport-failure shape
+   (`Failed to download config from <url>: HTTP request failed: …`) can arrive
+   with a different exit code and is caught by the same signature.
+3. **Bounded and observable.** Three attempts in total, 2 s and 5 s apart
+   (≤ ~7 s added wall-clock). Each retry logs
+   `[semgrep-scan] attempt n/3: semgrep could not load its configuration
+   (exit 7); retrying in 2s`, plus the fetch-failure line when semgrep printed
+   one, and a retry that succeeds says so. The wrapper's own lines are not
+   affected by `--quiet`.
+4. **Nothing is hidden.** The last attempt's output and exit code are
+   reported unchanged, so a genuine configuration error still fails with the
+   code it always had and the exit-code contract consumers read stays true.
+   Output is captured per attempt and replayed verbatim (stdout to stdout,
+   stderr to stderr) — the retry decision has to read it, and the replayed
+   bytes are the bytes semgrep printed.
+5. **`security.yml` joins the toolkit-ref contract.** The wrapper ships with
+   the toolkit, so `security.yml` declares the same `toolkit-ref` input as
+   secret-scan/diff-coverage/llm-pr-review (default = the release tag), both
+   composites forward it, and each release PR bumps it with the other pin
+   sites (D-0007). The toolkit's own `ci.yml` passes the PR head SHA, as it
+   already does for the secret scan and the judges (D-0019).
+
+### Rationale
+
+A merge-blocking gate that fails closed on someone else's rate limiter is a
+false red: the consumer's cost is a wasted cycle and, worse, a habit of
+re-running red security checks. The observed failure (a consumer's
+`make verify`: exit 7 with no output, passing on an immediate re-run with no
+code change) is exactly the transient class a bounded retry removes.
+
+The alternatives from the issue were each rejected for a specific reason.
+**Caching** has no first-party support left: semgrep removed its experimental
+registry cache (`--registry-caching`, gated behind `--experimental`) from
+osemgrep, and the pinned 1.177.0 has no such flag — a toolkit-built cache
+would mean owning a cache directory, its invalidation, and an
+`actions/cache` wiring, and would still miss the cold fetch of every fresh CI
+job, which is where the failure was seen. **Vendoring the ruleset** is
+deterministic but anti-security (new detection rules would never apply
+retroactively) and is already out of scope for the pinning issue; it also
+makes the toolkit the curator of a ruleset it has no standing to curate.
+**Accept-and-document alone** leaves the reported bug in place. What ships is
+retry *plus* the documentation half: after the bound, the failure mode is
+documented with the consumer's response, and the wrapper's log line names the
+cause even when `--quiet` hides semgrep's own message.
+
+Retrying the whole configuration-error bucket rather than only a detected
+download failure is the deliberate part. The bucket is small (the run failed
+before scanning, so nothing is re-scanned) and the cost is bounded, while the
+discriminator we would need — a visible message — is not reliably present.
+Because the final status is passed through, the retry cannot turn a real
+configuration error into a green run: it can only delay it.
+
+The retry bound is sized from the evidence, not from theory: the failure
+cleared on an immediate manual re-run, and anonymous registry rate limits are
+short. Two retries at 2 s and 5 s sit far below the gate's other budgets
+(the judge run's 45-minute retry budget, `REVIEW_CALL_TIMEOUT_SECONDS`) and
+are invisible in a green run.
+
+Putting the wrapper behind `security.yml`'s existing `toolkit-ref` input
+extends one documented limitation: the toolkit's own `ci.yml` passes its PR
+head SHA, which does not exist in this repository for fork PRs — the same
+limitation the secret scan already carries, recorded under Known limitations.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- Issue #50 — the failure record (consumer `make verify`, exit 7 with no
+  output, identical hook passing moments later, `curl` showing the registry
+  endpoint alive) and the four candidate policies this entry resolves.
+- Probe against semgrep 1.177.0 (this session): a nonexistent registry
+  ruleset yields `exit code 7` with
+  `[ERROR] Failed to download configuration from https://semgrep.dev/c/p/<name> HTTP 404.`
+  and `[ERROR] invalid configuration file found (1 configs were invalid)` on
+  stderr and **zero bytes** of output with `--quiet` — the two facts the retry
+  predicate is built on. A clean local-config scan exits 0; a scan with one
+  finding and `--error` exits 1 (never retried).
+- [Semgrep CLI reference — exit codes](https://docs.semgrep.dev/cli-reference)
+  — the exit-status table (7 = invalid configuration / missing
+  configuration) and the `--config` semantics ("Use `--config auto` to
+  automatically obtain rules tailored to this project; your project URL will
+  be used to log in to the semgrep registry").
+- [Semgrep CHANGELOG](https://github.com/semgrep/semgrep/blob/develop/CHANGELOG.md)
+  — "Removed the Registry caching experimental feature
+  (`--experimental --registry-caching`) in osemgrep" (`registry_caching`),
+  which is why caching is not the toolkit's option to take.
+- [Semgrep — How we resolved the 'HTTP request failed: timeout' issue in
+  OCaml](https://semgrep.dev/blog/2023/http-request-failed-timeout-issue-in-ocaml)
+  — Semgrep's own CI hit a config-download failure, and their fix was in the
+  transport layer (happy-eyeballs), not a retry: the download path has no
+  first-party retry to lean on, and an upstream fetch failure is a fatal
+  error in the CLI.
+- Issue #51 — the diagnosability half of the same failure (exit codes that
+  mean "not a finding", and the `--quiet` trap); it stays a separate,
+  independently closable issue, and this entry's log lines are what a retry
+  looks like from a consumer's side.
+- Issue #39 — the version-pinning axis of the same gate, including the
+  explicit non-goal (no vendored ruleset) this entry keeps.

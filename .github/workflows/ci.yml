@@ -74,6 +74,11 @@ jobs:
       # The composite forwards lint-paths to the security scan; mirror that
       # here so Semgrep covers the same two packages.
       scan-paths: "scripts quality_gates_toolkit"
+      # Same-repo assumption as the secret scan and the judges: the Semgrep
+      # wrapper (D-0025) must come from THIS PR's checkout, not the published
+      # tag. For fork PRs the head SHA does not exist here (documented
+      # limitation above).
+      toolkit-ref: ${{ github.event.pull_request.head.sha }}
 
   secretscan:
     uses: ./.github/workflows/secret-scan.yml

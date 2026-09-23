@@ -18,9 +18,12 @@ authors = [{ name = "Luis Arteaga" }]
 dependencies = []
 
 [project.scripts]
-# Console script invoked by the public pre-commit hook (.pre-commit-hooks.yaml)
-# and usable standalone: `secret-scan` scans the current repository.
+# Console scripts invoked by the public pre-commit hooks
+# (.pre-commit-hooks.yaml) and usable standalone: `secret-scan` scans the
+# current repository; `semgrep-scan` is `semgrep scan` plus the bounded
+# configuration-load retry (D-0025) that security.yml runs too.
 secret-scan = "scripts.secret_scan:main"
+semgrep-scan = "scripts.semgrep_scan:main"
 
 [build-system]
 requires = ["setuptools>=68"]
