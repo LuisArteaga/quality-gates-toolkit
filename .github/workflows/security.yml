@@ -5,7 +5,11 @@ name: Security scans (reusable)
 # installed step-locally so callers whose dev extras lack them still get a
 # working scan (idempotent where already present).
 #
-# No toolkit checkout needed: this workflow only runs pip-installed tools.
+# The Semgrep step runs the toolkit's own `semgrep-scan` wrapper from the
+# sibling toolkit checkout (same file the `semgrep` pre-commit hook runs,
+# D-0025): `semgrep scan` plus a bounded retry when the ruleset could not be
+# fetched from semgrep.dev, which is a network condition rather than a
+# finding. pip-audit needs no wrapper and no toolkit code.
 
 on:
   workflow_call:
@@ -26,6 +30,10 @@ on:
         description: Run the pip-audit dependency vulnerability check.
         type: boolean
         default: true
+      toolkit-ref:
+        description: Toolkit ref providing the Semgrep wrapper implementation.
+        type: string
+        default: "v1.8.3"
 
 permissions:
   contents: read
@@ -40,6 +48,14 @@ jobs:
           path: repo
           persist-credentials: false
 
+      - name: Check out quality-gates-toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LuisArteaga/quality-gates-toolkit
+          ref: ${{ inputs.toolkit-ref }}
+          path: toolkit
+          persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -50,7 +66,7 @@ jobs:
         working-directory: repo
         run: |
           pip install -q semgrep
-          semgrep scan ${{ inputs.scan-paths }} --config=auto --error
+          python3 ../toolkit/scripts/semgrep_scan.py ${{ inputs.scan-paths }} --config=auto --error
 
       - name: Run pip-audit dependency check
         if: inputs.enable-pip-audit

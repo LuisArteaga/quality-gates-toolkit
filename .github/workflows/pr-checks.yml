@@ -24,8 +24,9 @@ name: PR checks (composite)
 #
 # Internal references are RELATIVE (./.github/workflows/...) so the nested
 # workflows resolve from the SAME commit/tag as this composite — no version
-# drift between pr-checks.yml@v1.8.3 and its micro-workflows. toolkit-ref only
-# selects the ref of the second checkout (the Python implementation).
+# drift between pr-checks.yml@v1.8.3 and its micro-workflows. toolkit-ref
+# selects the ref of the toolkit checkouts (the Python implementation: the
+# secret scanner, the judges, and the Semgrep wrapper security.yml runs).
 #
 # Defaults are deliberately NEUTRAL (public contract, not the origin
 # repository's config): repo-specific values belong in the caller. See
@@ -176,6 +177,7 @@ jobs:
       scan-paths: ${{ inputs.lint-paths }}
       enable-semgrep: ${{ inputs.enable-semgrep }}
       enable-pip-audit: ${{ inputs.enable-pip-audit }}
+      toolkit-ref: ${{ inputs.toolkit-ref }}
 
   js-lint:
     if: inputs.enable-js-lint

@@ -32,6 +32,9 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
 - D-0024 undelivered review body: a run that ends without posting its review
   persists the exact body and uploads it as a failure-path artifact, gated so
   that only an undelivered body produces one.
+- D-0025 semgrep ruleset-fetch policy: the hook and security.yml run the SAME
+  wrapper (`scripts/semgrep_scan.py`) — one bounded retry policy for the
+  registry fetch, never two implementations that can drift apart.
 """
 
 from pathlib import Path
@@ -374,7 +377,12 @@ def test_undelivered_review_body_upload_matches_the_reviewer_contract():
 
 
 def test_toolkit_checkouts_are_public_repo_siblings_without_persisted_credentials():
-    for name in ("secret-scan.yml", "diff-coverage.yml", "llm-pr-review.yml"):
+    for name in (
+        "secret-scan.yml",
+        "diff-coverage.yml",
+        "llm-pr-review.yml",
+        "security.yml",
+    ):
         # Job ids vary per workflow; scan every job's steps for the toolkit
         # checkout instead of assuming the id from the filename.
         all_steps = [
@@ -815,7 +823,7 @@ def test_pre_commit_hooks_declare_python_tool_hooks():
     assert mypy_hook.get("pass_filenames") is False
     assert mypy_hook.get("always_run") is True
     pinned = {
-        "semgrep": ("semgrep scan", ["semgrep==1.177.0"]),
+        "semgrep": ("semgrep-scan", ["semgrep==1.177.0"]),
         "pip-audit": ("pip-audit", ["pip-audit==2.10.1"]),
     }
     for hook_id, (entry, deps) in pinned.items():
@@ -843,6 +851,9 @@ def test_pyproject_is_installable_and_exposes_secret_scan_script():
     assert data["build-system"]["build-backend"] == "setuptools.build_meta"
     # The hook entry point must resolve to a real console script.
     assert data["project"]["scripts"]["secret-scan"] == "scripts.secret_scan:main"
+    # D-0025: the semgrep hook entry is a console script too, so the hook env
+    # and security.yml run the same module.
+    assert data["project"]["scripts"]["semgrep-scan"] == "scripts.semgrep_scan:main"
     assert "scripts" in data["tool"]["setuptools"]["packages"]
     # D-0017: the importable judge package ships in the same distribution.
     assert "quality_gates_toolkit" in data["tool"]["setuptools"]["packages"]
@@ -850,3 +861,64 @@ def test_pyproject_is_installable_and_exposes_secret_scan_script():
     # bump it together with the toolkit-ref pin sites in the release PR.
     # Mirrors the hardcoded-tag discipline of the toolkit-ref contract test.
     assert data["project"]["version"] == "1.8.3"
+
+
+# ---------------------------------------------------------------------------
+# D-0025: Semgrep ruleset-fetch policy on both surfaces
+# ---------------------------------------------------------------------------
+
+
+def _run_steps(name: str) -> list[str]:
+    return [
+        step["run"]
+        for job in _jobs(_load(name)).values()
+        for step in job.get("steps", [])
+        if step.get("run")
+    ]
+
+
+def test_security_gate_runs_the_semgrep_wrapper_from_the_toolkit_checkout():
+    """D-0025: the CI surface of the fetch policy is the toolkit's own
+    wrapper, taken from the toolkit checkout — never a second, YAML-local
+    implementation of the same retry."""
+    semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
+    assert "pip install -q semgrep" in semgrep_step
+    assert "../toolkit/scripts/semgrep_scan.py" in semgrep_step
+    assert "--config=auto --error" in semgrep_step
+    assert "semgrep scan" not in semgrep_step, (
+        "the raw semgrep invocation bypasses the retry policy"
+    )
+
+
+def test_security_gate_takes_the_wrapper_ref_as_an_input():
+    """The wrapper ships with the toolkit, so security.yml needs the same
+    toolkit-ref contract as the other toolkit-executing micro-workflows."""
+    inputs = _call_inputs(_load("security.yml"))
+    assert inputs["toolkit-ref"]["default"] == "v1.8.3"
+
+
+def test_composites_forward_toolkit_ref_to_the_security_gate():
+    for name in ("python-checks.yml", "pr-checks.yml"):
+        job = _jobs(_load(name))["security"]
+        assert job["with"]["toolkit-ref"] == "${{ inputs.toolkit-ref }}", name
+
+
+def test_hook_and_security_gate_share_one_semgrep_implementation():
+    """D-0025 AC ("applied identically to the hook and to security.yml"),
+    pinned structurally: the hook's console script and the workflow's file
+    path both resolve to scripts/semgrep_scan.py, so a change to the retry
+    policy reaches both surfaces in one commit."""
+    import tomllib
+
+    hooks_path = WORKFLOWS.parent.parent / ".pre-commit-hooks.yaml"
+    hooks = yaml.safe_load(hooks_path.read_text())
+    hook = next(h for h in hooks if h.get("id") == "semgrep")
+    with (WORKFLOWS.parent.parent / "pyproject.toml").open("rb") as f:
+        console_scripts = tomllib.load(f)["project"]["scripts"]
+    assert hook["entry"] in console_scripts, (
+        "the hook entry must be a console script the hook env can run"
+    )
+    entry_point = console_scripts[hook["entry"]]
+    module_file = entry_point.split(":")[0].replace(".", "/") + ".py"
+    semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
+    assert module_file in semgrep_step

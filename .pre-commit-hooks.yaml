@@ -2,8 +2,9 @@
 # as a remote pre-commit hook source (see README "Pre-commit hook").
 # Hook ownership split (D-0016): `language: python` hooks run in
 # pre-commit's isolated environment at toolkit-pinned versions and need no
-# consumer venv — `secret-scan` via the console script this package
-# installs, `semgrep`/`pip-audit` via additional_dependencies. Their
+# consumer venv — `secret-scan` and `semgrep` via the console scripts this
+# package installs (the semgrep hook's scanner itself arrives through
+# additional_dependencies), `pip-audit` via additional_dependencies. Their
 # `language_version` pins the env interpreter to python3.12 (the package
 # floor): pre-commit otherwise defaults to the interpreter IT runs under,
 # which may be older and would fail the env install. The
@@ -49,8 +50,8 @@
   always_run: true
 - id: semgrep
   name: quality-gates-toolkit semgrep
-  description: Runs pinned semgrep scan in an isolated environment (consumer supplies --config and paths via args).
-  entry: semgrep scan
+  description: Runs pinned semgrep scan in an isolated environment (consumer supplies --config and paths via args). The ruleset is fetched from semgrep.dev at run time; a failed fetch is retried a bounded number of times (D-0025).
+  entry: semgrep-scan
   language: python
   language_version: python3.12
   additional_dependencies: ["semgrep==1.177.0"]
