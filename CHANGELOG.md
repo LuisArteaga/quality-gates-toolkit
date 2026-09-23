@@ -10,6 +10,45 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.4] - 2026-09-23
+
+### Added
+
+- `semgrep-scan` console script (`scripts/semgrep_scan.py`): `semgrep scan`
+  plus a bounded retry of the ruleset *configuration* load. The ruleset is a
+  live registry artefact (`--config=auto` fetches it at run time), and a
+  failed fetch — an unauthenticated call that can be rate-limited (observed
+  as HTTP 403) — exits 7, the same code semgrep uses for an invalid ruleset.
+  The wrapper retries that outcome twice, 2 s and 5 s apart, logs each
+  attempt as `[semgrep-scan] …` together with the fetch-failure line when
+  semgrep printed one, and reports the last attempt's output and exit code
+  unchanged: nothing is hidden, and a genuine configuration error still
+  fails exactly as before. The `semgrep` pre-commit hook runs the same
+  wrapper and `security.yml` runs it from the toolkit checkout, so the
+  policy cannot drift between local commits and CI (D-0025, PR #63).
+
+### Changed
+
+- `security.yml` takes a `toolkit-ref` input (default = the release tag), the
+  same contract as the other toolkit-executing micro-workflows, because its
+  Semgrep step now runs the toolkit's wrapper. Both composites forward it, so
+  a caller overriding `toolkit-ref` also selects the wrapper.
+- The README documents the semgrep ruleset-fetch policy (the network
+  dependency, the retry bound, the `--quiet` interaction) under
+  *Pre-commit hook*, and its troubleshooting list gains the "`exit code 7`
+  with no message" signature (D-0025).
+
+### Fixed
+
+- A judge review whose GitHub submission is refused is no longer discarded:
+  the exact body is written to `review_body.md` (overridable via
+  `REVIEW_BODY_PATH`), dumped to the job log, annotated in the checks UI
+  (`LLM judge verdicts: …`), and uploaded as the `llm-pr-review-body`
+  artifact. The file exists only when the body was NOT delivered, so its
+  presence is the signal and a green run stays artifact-free. Submission
+  refusal still exits 1 and a non-PASS verdict still exits 1 — the
+  persistence is observability, not a retry (D-0024, PR #61).
+
 ## [1.8.3] - 2026-09-23
 
 ### Changed
@@ -214,7 +253,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.3...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.4...HEAD
+[1.8.4]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.0...v1.8.1

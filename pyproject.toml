@@ -8,8 +8,10 @@ name = "quality-gates-toolkit"
 # (D-0021, PR #53); 1.8.1 carries the identity-less review fix
 # (D-0005, PR #55); 1.8.2 carries the per-call wall-clock ceiling and
 # timeout re-route (D-0022, PR #57); 1.8.3 carries the judge finding
-# promotion threshold (D-0023, PR #59).
-version = "1.8.3"
+# promotion threshold (D-0023, PR #59); 1.8.4 carries the persisted
+# undelivered review body (D-0024, PR #61) and the Semgrep ruleset-fetch
+# retry shared by the hook and security.yml (D-0025, PR #63).
+version = "1.8.4"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
