@@ -10,6 +10,30 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.2] - 2026-09-23
+
+### Added
+
+- Per-call wall-clock ceiling for judge calls: `REVIEW_CALL_TIMEOUT_SECONDS`
+  (default 300) abandons a call that exceeds it, logs
+  `[OPENROUTER] timeout model=… provider=… after=…s`, and counts it in a new
+  **Timeouts** column of the review's KPI table. `urlopen`'s socket timeout
+  bounds one network operation, not one generation, so a slow provider
+  previously cost minutes per call with no error at all (observed: 564.1s for
+  a legitimate verdict, and one pinned route past 48 minutes).
+
+### Changed
+
+- A retry after a timeout **releases a pinned `routing` order**: the same
+  model is retried with OpenRouter's own provider failover re-enabled,
+  because pinned routing disables failover and would re-enter the same slow
+  provider. A timeout is deliberately **not** a model-fallback trigger —
+  `fallback_model` keeps its existing triggers (exhausted API-error retries
+  and empty content) (D-0022, PR #57).
+- The multi-batch path is bounded in total by `REVIEW_RETRY_BUDGET_SECONDS`:
+  batches left unevaluated report NEEDS REVIEW naming how many were skipped,
+  instead of a truncated review reading as a PASS.
+
 ## [1.8.1] - 2026-09-23
 
 ### Fixed
@@ -166,7 +190,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.1...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.2...HEAD
+[1.8.2]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.6.0...v1.7.0
