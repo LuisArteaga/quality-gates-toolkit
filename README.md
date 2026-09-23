@@ -400,6 +400,32 @@ names declare them via the optional reserved top-level key
 scanned before the known default. A nested hit is logged (`[INFO]` with the
 section name); the verdict protocol is unaffected. See D-0015.
 
+**Completion-token cap** — every judge request carries a bound on the
+completion length, so a degenerate generation cannot burn a model's whole
+output ceiling (observed: 131,072 tokens over ~23 min, empty content):
+
+- `max_tokens` (per node, positive integer) — the request's completion
+  ceiling. Reasoning tokens count against it. Consumers that omit it get
+  the toolkit default **32768**: observed judge completions (reasoning
+  included) on a ~2.2k-line diff run 0.8k–12.2k tokens, so the default
+  keeps ~2.5x headroom while bounding a runaway call to minutes.
+- Invalid values (`0`, negative, float, string) warn and fall back to the
+  default — a malformed config value can never remove the bound. The
+  resolved value is logged with the rest of the judge config.
+- The value must fit the model's context: OpenRouter rejects a request
+  whose prompt plus `max_tokens` exceeds the context length (HTTP 400,
+  non-retryable). The 32768 default leaves room for the ~28k-token prompts
+  the judges send even on a 128k-context model.
+- The cap applies to **every** attempt including the fallback model: it is
+  a latency/cost bound, not a routing or quality setting.
+- An **empty** response that reached the cap skips the same-model nudge and
+  goes straight to the fallback model (when one is configured): the
+  cap-saturating empty generation *is* the pathology, so re-asking the same
+  route is predicted to repeat it. A capped-but-non-empty response still
+  evaluates normally, so truncation never silently corrupts a verdict.
+
+See D-0021.
+
 Judges also read the **caller's** `docs/context.md` and `docs/adr/*.md` (if
 present) as architecture context — your documented decisions directly shape
 the architecture verdict.

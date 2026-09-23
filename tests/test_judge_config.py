@@ -6,7 +6,8 @@ env overrides disable provider routing, and orchestrator-runtime fields
 (recursion/loop thresholds) are NOT returned. Nested judge sections
 (``ci_cd_pr_judges`` etc., plus the optional ``judges-section`` declaration)
 resolve additively; flat top-level configs resolve byte-identically to the
-v1.3.0 behavior (golden contract).
+v1.3.0 behavior (golden contract) except for the D-0021 completion cap,
+which the resolver now fills in for any config that omits ``max_tokens``.
 """
 
 import json
@@ -66,6 +67,28 @@ class TestFactoryResolution:
         assert cfg["model"] == judge_config.DEFAULT_MODEL
         assert cfg["routing"] is None
         assert cfg["fallback_model"] is None
+        assert cfg["max_tokens"] == judge_config.DEFAULT_MAX_TOKENS
+
+    def test_omitted_max_tokens_resolves_to_the_toolkit_default(self, tmp_path):
+        _write_factory(tmp_path, {"syntax_lint": {"model": "vendor/model-a"}})
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["max_tokens"] == judge_config.DEFAULT_MAX_TOKENS
+
+    @pytest.mark.parametrize("bad_value", [0, -1, 1.5, "8192", True, False])
+    def test_invalid_max_tokens_warns_and_uses_the_default(
+        self, tmp_path, capsys, bad_value
+    ):
+        _write_factory(
+            tmp_path,
+            {"syntax_lint": {"model": "vendor/model-a", "max_tokens": bad_value}},
+        )
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["max_tokens"] == judge_config.DEFAULT_MAX_TOKENS
+        err = capsys.readouterr().err
+        assert (
+            "[WARN] Config key 'max_tokens' for node 'syntax_lint' must be a "
+            "positive integer; using default" in err
+        )
 
     def test_malformed_json_degrades_gracefully(self, tmp_path):
         path = tmp_path / "factory.json"
@@ -131,6 +154,9 @@ class TestEnvOverridePrecedence:
         assert cfg["model"] == "vendor/override"
         assert cfg["routing"] is None
         assert cfg["temperature"] == 0.0  # factory model differs -> safe defaults
+        # A different model cannot inherit the factory cap either; the
+        # request stays bounded by the toolkit default (D-0021).
+        assert cfg["max_tokens"] == judge_config.DEFAULT_MAX_TOKENS
 
     def test_agent_model_used_when_node_var_absent(self):
         os.environ["AGENT_MODEL"] = "vendor/general"
@@ -325,6 +351,22 @@ class TestNestedSectionResolution:
         ]
         assert cfg["options"] == {"thinking": "max"}
 
+    def test_nested_entry_resolves_its_configured_max_tokens(self, tmp_path):
+        _write_factory(
+            tmp_path,
+            {
+                "ci_cd_pr_judges": {
+                    "security": {"model": "vendor/nested", "max_tokens": 4096},
+                    "architecture": {"model": "vendor/nested-2"},
+                }
+            },
+        )
+        assert judge_config.resolve_model_config("security")["max_tokens"] == 4096
+        assert (
+            judge_config.resolve_model_config("architecture")["max_tokens"]
+            == judge_config.DEFAULT_MAX_TOKENS
+        )
+
     def test_non_judge_nodes_from_other_sections_do_not_resolve(self, tmp_path):
         # Bounded scan: cli_orchestration/refine_graph_nodes are NOT judge
         # sections — their node names must never resolve for the judges.
@@ -433,7 +475,10 @@ class TestNestedSectionResolution:
 
 class TestFlatGoldenContract:
     """Old-style flat consumer configs must resolve byte-identically to
-    v1.3.0 — the nested-section fallback is strictly additive."""
+    v1.3.0 except for the D-0021 completion cap (every entry below omits
+    ``max_tokens``, so it resolves to the toolkit default) — the
+    nested-section fallback is strictly additive and the cap is the single
+    new resolved field."""
 
     GOLDEN_FLAT_RESOLUTIONS = {
         "syntax_lint": {
@@ -441,7 +486,7 @@ class TestFlatGoldenContract:
             "routing": None,
             "temperature": 0.0,
             "options": None,
-            "max_tokens": None,
+            "max_tokens": 32768,
             "fallback_model": "z-ai/glm-5.2",
         },
         "test_coverage": {
@@ -458,7 +503,7 @@ class TestFlatGoldenContract:
             ],
             "temperature": 0.0,
             "options": None,
-            "max_tokens": None,
+            "max_tokens": 32768,
             "fallback_model": "z-ai/glm-5.2",
         },
         "architecture": {
@@ -475,7 +520,7 @@ class TestFlatGoldenContract:
             ],
             "temperature": 0.0,
             "options": None,
-            "max_tokens": None,
+            "max_tokens": 32768,
             "fallback_model": "moonshotai/kimi-k3",
         },
         "security": {
@@ -489,7 +534,7 @@ class TestFlatGoldenContract:
             ],
             "temperature": 0.0,
             "options": {"reasoning": {"effort": "high"}},
-            "max_tokens": None,
+            "max_tokens": 32768,
             "fallback_model": "z-ai/glm-5.2",
         },
     }

@@ -27,6 +27,11 @@ Routing modes (consumer policy, see README):
   - ``routing: null`` / omitted  → auto-route: OpenRouter chooses the provider
     per request (price-weighted, automatic failover).
   - ``routing: [..]``            → pinned provider order; failover disabled.
+
+Completion bound: the resolved config always carries a positive
+``max_tokens`` — the consumer's value when set, else ``DEFAULT_MAX_TOKENS``
+(D-0021). It is a request-level latency/cost bound, not a model setting, so
+it persists across the fallback path in review.py.
 """
 
 import json
@@ -35,6 +40,14 @@ import sys
 from typing import Any
 
 DEFAULT_MODEL = "z-ai/glm-5.3-flash"
+# Bounded completion-token default (D-0021). Applied at this resolution
+# boundary when a consumer config omits `max_tokens`, so every judge request
+# carries a completion bound: a degenerate generation (e.g. a reasoning loop)
+# otherwise burns the model's whole output ceiling on one call — observed as
+# 131,072 tokens / 23 min with empty content — while a judge verdict needs a
+# few thousand. Observed judge completions (reasoning included) on a ~2.2k-line
+# diff: 0.8k-12.2k tokens, so 32k keeps ~2.5x headroom.
+DEFAULT_MAX_TOKENS = 32768
 CONFIG_PATH_ENV = "REVIEW_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = "config/factory.json"
 # Nested factory.json sections scanned when a node is not at the top level.
@@ -49,6 +62,26 @@ JUDGES_SECTION_KEY = "judges-section"
 
 def _warn(message: str) -> None:
     print(f"[WARN] {message}", file=sys.stderr)
+
+
+def _resolve_max_tokens(value: Any, node_name: str) -> int:
+    """The effective completion-token cap for ``node_name``.
+
+    A configured ``max_tokens`` is used as-is when it is a positive integer;
+    anything else (absent, ``null``, ``0``, negative, float, string, or a
+    bool — ``True`` is an ``int`` in Python but never a token bound) warns and
+    falls back to ``DEFAULT_MAX_TOKENS`` so a malformed config value can
+    never remove the bound.
+    """
+    if value is None:
+        return DEFAULT_MAX_TOKENS
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        _warn(
+            f"Config key 'max_tokens' for node '{node_name}' must be a "
+            f"positive integer; using default {DEFAULT_MAX_TOKENS}."
+        )
+        return DEFAULT_MAX_TOKENS
+    return value
 
 
 def load_factory_config() -> dict[str, Any]:
@@ -109,8 +142,11 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
     """Resolve the judge Model Config for ``node_name``.
 
     Returns: ``{"model": str, "routing": list[str] | None,
-    "temperature": float, "options": dict | None, "max_tokens": int | None,
+    "temperature": float, "options": dict | None, "max_tokens": int,
     "fallback_model": str | None}``
+
+    ``max_tokens`` is always a positive integer: the configured value when
+    valid, otherwise ``DEFAULT_MAX_TOKENS`` (D-0021).
     """
     factory = load_factory_config()
     # Validate the optional section declaration up-front (even when the
@@ -157,11 +193,11 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
         if factory_cfg and factory_cfg.get("model") == overridden_model:
             temperature = factory_cfg.get("temperature", 0.0)
             options = factory_cfg.get("options")
-            max_tokens = factory_cfg.get("max_tokens")
+            max_tokens = _resolve_max_tokens(factory_cfg.get("max_tokens"), node_name)
         else:
             temperature = 0.0
             options = None
-            max_tokens = None
+            max_tokens = DEFAULT_MAX_TOKENS
         source = node_env_var if node_model else "AGENT_MODEL"
         cfg: dict[str, Any] = {
             "model": overridden_model,
@@ -181,7 +217,7 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
             "routing": factory_cfg.get("routing"),
             "temperature": factory_cfg.get("temperature", 0.0),
             "options": factory_cfg.get("options"),
-            "max_tokens": factory_cfg.get("max_tokens"),
+            "max_tokens": _resolve_max_tokens(factory_cfg.get("max_tokens"), node_name),
             "fallback_model": factory_cfg.get("fallback_model"),
         }
     else:
@@ -195,7 +231,7 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
             "routing": None,
             "temperature": 0.0,
             "options": None,
-            "max_tokens": None,
+            "max_tokens": DEFAULT_MAX_TOKENS,
             "fallback_model": None,
         }
 
@@ -207,7 +243,8 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
         )
     print(
         f"[INFO] Resolved judge config (node={node_name}): model={cfg['model']}, "
-        f"routing={'auto' if cfg['routing'] is None else 'pinned'}",
+        f"routing={'auto' if cfg['routing'] is None else 'pinned'}, "
+        f"max_tokens={cfg['max_tokens']}",
         file=sys.stderr,
     )
     return cfg

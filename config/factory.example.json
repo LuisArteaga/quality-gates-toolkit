@@ -1,5 +1,5 @@
 {
-  "_comment": "Example judge configuration. Node names are fixed by the toolkit's review.py (syntax_lint, test_coverage, architecture, security). Routing modes: omit 'routing' (or null) = auto-route, OpenRouter picks the provider per request with automatic failover. 'routing': [..] = pinned provider order, failover disabled (quality-controlled, less resilient). See README #routing-modes.",
+  "_comment": "Example judge configuration. Node names are fixed by the toolkit's review.py (syntax_lint, test_coverage, architecture, security). Routing modes: omit 'routing' (or null) = auto-route, OpenRouter picks the provider per request with automatic failover. 'routing': [..] = pinned provider order, failover disabled (quality-controlled, less resilient). Optional per node: 'max_tokens' = positive integer completion ceiling (default 32768, reasoning tokens included) bounding latency and cost. Both knobs are documented in the README's 'Judge configuration' section.",
   "syntax_lint": {
     "model": "z-ai/glm-5.3-flash",
     "routing": null,
