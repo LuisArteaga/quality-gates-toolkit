@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -217,6 +218,14 @@ BATCH_BUDGET_CHARS = 200000
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 API_RETRY_DELAYS_SECONDS = (5, 15, 45, 120, 300, 600, 900, 1200)
 API_RETRY_BUDGET_SECONDS = int(os.environ.get("REVIEW_RETRY_BUDGET_SECONDS", "2700"))
+
+# Per-call wall-clock ceiling (issue #44). ``urlopen(timeout=...)`` bounds
+# individual socket operations, not one generation, so a slow provider can
+# block for minutes while looking like ordinary latency (observed: 564.1s on
+# one pinned route, and an attempt past 48 min on a narrower one). A call
+# exceeding this ceiling is abandoned, logged distinctly, and retried on the
+# auto route; the retry budget above stays the outer bound of one call.
+CALL_TIMEOUT_SECONDS = int(os.environ.get("REVIEW_CALL_TIMEOUT_SECONDS", "300"))
 REVIEW_DEBUG = os.environ.get("REVIEW_DEBUG", "") == "1"
 
 EMPTY_CONTENT_INSTRUCTION = (
@@ -276,6 +285,7 @@ USAGE_FIELDS = (
     "reasoning_tokens",
     "cached_tokens",
     "cost",
+    "timeouts",
 )
 
 USAGE_NUMERIC_FIELDS = (
@@ -285,6 +295,7 @@ USAGE_NUMERIC_FIELDS = (
     "reasoning_tokens",
     "cached_tokens",
     "cost",
+    "timeouts",
 )
 
 
@@ -418,6 +429,27 @@ class OpenRouterHTTPError(Exception):
         )
 
 
+class OpenRouterCallTimeout(Exception):
+    """A single OpenRouter call exceeded the per-call wall-clock ceiling.
+
+    Raised by the deadline wrapper, not by the transport: the request may
+    still be in flight on an abandoned worker thread. Carries the model, the
+    elapsed seconds, and the routing that was requested — enough for the
+    distinct ``[OPENROUTER] timeout`` log line and the retry decision
+    (a timeout is retryable, but never on the same pinned route).
+    """
+
+    def __init__(self, model: str, after_seconds: float, routing: list | None):
+        self.model = model
+        self.after_seconds = after_seconds
+        self.routing = routing
+        super().__init__(
+            f"OpenRouter call for model {model} exceeded the "
+            f"{CALL_TIMEOUT_SECONDS}s per-call ceiling (after "
+            f"{after_seconds:.1f}s)"
+        )
+
+
 def parse_retry_after(headers: Any) -> int | None:
     """The ``Retry-After`` header in seconds, when present and numeric."""
     try:
@@ -435,8 +467,75 @@ def _read_error_body(http_error: urllib.error.HTTPError) -> str:
         return ""
 
 
-def _call_with_api_retry(
+def route_label(routing):
+    """Name the requested provider route for logs: the pinned order or ``auto``.
+
+    A timed-out call never reports usage, so the actually-serving provider is
+    unknown; the log names the route that was *requested* instead. Pinned
+    entries are lowercased to match what ``build_openrouter_provider`` sends.
+    """
+    if not routing:
+        return "auto"
+    return "+".join(str(provider).lower() for provider in routing)
+
+
+def _call_transport_with_deadline(
     model, messages, api_key, routing, temperature, options, max_tokens=None
+):
+    """Run one transport call under the per-call wall-clock ceiling.
+
+    ``urlopen(timeout=...)`` bounds individual socket operations, not a
+    provider that generates or streams slowly, so the call runs on a daemon
+    worker thread while the waiting side enforces ``CALL_TIMEOUT_SECONDS``.
+    A worker that outlives the ceiling cannot be killed: it is abandoned (its
+    result is discarded) and dies when its own socket operations time out or
+    the process exits, so a timed-out attempt costs at most the ceiling.
+    Raising ``OpenRouterCallTimeout`` keeps the transport itself free of
+    deadline logic and keeps the failure classified as retryable.
+
+    A transport exception raised on the worker is re-raised here with its
+    traceback, so callers see exactly what they saw before this wrapper.
+    """
+    outcome: dict[str, Any] = {}
+
+    def _worker():
+        try:
+            outcome["value"] = call_openrouter_api(
+                model,
+                messages,
+                api_key,
+                routing=routing,
+                temperature=temperature,
+                options=options,
+                max_tokens=max_tokens,
+            )
+        # Anything the worker raises is re-raised on the calling thread, so
+        # the classification and retry policy see it unchanged. Catching
+        # BaseException (not Exception) keeps a worker-side SystemExit or
+        # KeyboardInterrupt from vanishing into a KeyError here.
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    started = time.monotonic()
+    worker.start()
+    worker.join(CALL_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        raise OpenRouterCallTimeout(model, time.monotonic() - started, routing)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+def _call_with_api_retry(
+    model,
+    messages,
+    api_key,
+    routing,
+    temperature,
+    options,
+    max_tokens=None,
+    timeout_records=None,
 ):
     """Single OpenRouter call with a 429-aware API-error retry policy.
 
@@ -452,31 +551,46 @@ def _call_with_api_retry(
     omits the key. The retry policy itself is unchanged — a bounded call
     that still fails is retried exactly like before.
 
+    Every attempt is additionally capped in wall-clock terms by
+    ``CALL_TIMEOUT_SECONDS`` (issue #44, D-0022). A call that exceeds the
+    ceiling is abandoned, logged as a distinct ``[OPENROUTER] timeout`` line,
+    and retried on the **auto route** (``routing=None``): pinned routing
+    disables provider failover, so repeating it would re-enter the same slow
+    provider. The model is unchanged — only the route is released — and the
+    retry keeps the standard escalating schedule. When ``timeout_records`` is
+    a list, every abandoned attempt appends ``{"model", "provider",
+    "after_seconds"}`` so the caller can report the count in the KPI table.
+
     Returns the raw response body string on success.
     Raises Exception on API-level failure after the budget is exhausted.
     Does NOT check for empty content — that is the caller's responsibility.
     """
     deadline = time.monotonic() + API_RETRY_BUDGET_SECONDS
     attempt = 0
+    reroute_after_timeout = False
     while True:
         attempt += 1
+        # A timeout retry releases a pinned route: pinned routing disables
+        # provider failover, so repeating it would re-enter the same slow
+        # provider (issue #44, D-0022). The model is unchanged.
+        attempt_routing = None if reroute_after_timeout else routing
         started = time.monotonic()
         if REVIEW_DEBUG:
             log(
                 f"[DEBUG] OpenRouter request model={model} attempt={attempt} "
-                f"routing={routing} temperature={temperature} "
+                f"routing={attempt_routing} temperature={temperature} "
                 f"max_tokens={max_tokens} "
                 f"messages={[message_size(m) for m in messages]}"
             )
         try:
-            status, body = call_openrouter_api(
+            status, body = _call_transport_with_deadline(
                 model,
                 messages,
                 api_key,
-                routing=routing,
-                temperature=temperature,
-                options=options,
-                max_tokens=max_tokens,
+                attempt_routing,
+                temperature,
+                options,
+                max_tokens,
             )
             parsed_body = json.loads(body, strict=False)
             if "error" in parsed_body:
@@ -496,6 +610,26 @@ def _call_with_api_retry(
             )
             return body
         except Exception as error:
+            if isinstance(error, OpenRouterCallTimeout):
+                reroute_after_timeout = True
+                if timeout_records is not None:
+                    timeout_records.append(
+                        {
+                            "model": model,
+                            "provider": route_label(attempt_routing),
+                            "after_seconds": error.after_seconds,
+                        }
+                    )
+                log(
+                    f"[OPENROUTER] timeout model={model} "
+                    f"provider={route_label(attempt_routing)} "
+                    f"after={error.after_seconds:.1f}s "
+                    f"ceiling={CALL_TIMEOUT_SECONDS}s attempt={attempt} "
+                    f"next_route=auto"
+                )
+            # Both failure classes fall through to the shared wait/budget
+            # bookkeeping below: a timeout keeps the standard escalating
+            # schedule, it only changes the next attempt's route.
             retryable, retry_after = classify_api_error(error)
             label = (
                 f"HTTP {error.status}"
@@ -533,8 +667,13 @@ def _call_with_api_retry(
                 f"[WARN] retrying model={model} in {wait:.0f}s "
                 f"(elapsed={elapsed:.0f}s, budget={API_RETRY_BUDGET_SECONDS}s)"
             )
+            action = (
+                f"retry in {wait:.0f}s on auto route"
+                if isinstance(error, OpenRouterCallTimeout)
+                else f"retry in {wait:.0f}s"
+            )
             append_step_summary(
-                [f"| `{model}` | attempt {attempt} | {label} | retry in {wait:.0f}s |"]
+                [f"| `{model}` | attempt {attempt} | {label} | {action} |"]
             )
             time.sleep(wait)
 
@@ -544,9 +683,14 @@ def classify_api_error(error: Exception) -> tuple[bool, int | None]:
 
     Returns ``(retryable, retry_after_seconds)``. Retryable: HTTP 429
     (rate limited), 408 (request timeout), 5xx (provider-side), network
-    timeouts/connection errors, and in-band API error payloads. Every
-    other HTTP 4xx (bad request, auth, unknown model) is permanent.
+    timeouts/connection errors, in-band API error payloads, and a call
+    abandoned at the per-call ceiling (D-0022). Every other HTTP 4xx (bad
+    request, auth, unknown model) is permanent.
     """
+    if isinstance(error, OpenRouterCallTimeout):
+        # The route is the suspect, not the request: retryable, with no
+        # server-requested wait — the retry itself re-routes to auto.
+        return True, None
     status = getattr(error, "status", None)
     if status is None:
         # A raw ``urllib.error.HTTPError`` that bypassed the transport
@@ -640,15 +784,16 @@ def render_kpi_table(judges_data: dict) -> list[str]:
     """Render the judge usage KPI markdown table (pure helper, no I/O).
 
     One row per judge with the actually-used model(s) and serving
-    provider(s), token counts, cost, LLM call count, and wall-clock
-    duration, plus a Total row merged across all judges. Judges without
-    usage data (legacy shapes, empty-diff short-circuits) render ``n/a``.
+    provider(s), token counts, cost, LLM call count, the number of calls
+    abandoned at the per-call ceiling (D-0022), and wall-clock duration,
+    plus a Total row merged across all judges. Judges without usage data
+    (legacy shapes, empty-diff short-circuits) render ``n/a``.
     """
     lines = [
         "### 📊 Judge Usage & KPIs\n",
         "| Judge | Model | Provider | Input Tokens | Output Tokens | "
-        "Reasoning Tokens | Cost (USD) | LLM Calls | Duration |",
-        "| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "Reasoning Tokens | Cost (USD) | LLM Calls | Timeouts | Duration |",
+        "| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     infos = [
         info if isinstance(info, dict) else {}
@@ -668,6 +813,7 @@ def render_kpi_table(judges_data: dict) -> list[str]:
             f"| {_format_kpi_tokens(usage.get('reasoning_tokens'))} "
             f"| {_format_kpi_cost(usage.get('cost'))} "
             f"| {_format_kpi_tokens(usage.get('llm_calls'))} "
+            f"| {_format_kpi_tokens(usage.get('timeouts'))} "
             f"| {_format_kpi_duration(info.get('duration_seconds'))} |"
         )
     total_usage = merge_usages([info.get("usage") for info in infos])
@@ -680,6 +826,7 @@ def render_kpi_table(judges_data: dict) -> list[str]:
         f"| {_format_kpi_tokens(total_usage['reasoning_tokens'])} "
         f"| {_format_kpi_cost(total_usage['cost'])} "
         f"| {_format_kpi_tokens(total_usage['llm_calls'])} "
+        f"| {_format_kpi_tokens(total_usage['timeouts'])} "
         f"| {_format_kpi_duration(total_duration or None)} |"
     )
     return lines
@@ -742,9 +889,11 @@ def _run_layered_retry(
     temperature,
     options,
     max_tokens=None,
+    timeout_records=None,
 ):
     """Execute the layered API-error + empty-content retry/fallback policy
-    (ADR-0021, amended 2026-08-31; completion cap added by D-0021).
+    (ADR-0021, amended 2026-08-31; completion cap added by D-0021;
+    per-call wall-clock ceiling added by D-0022).
 
     Wraps the single-call transport (``_call_with_api_retry``) with the
     API-error fallback trigger and the empty-content quality check, kept
@@ -763,9 +912,11 @@ def _run_layered_retry(
            ladder goes straight to (3).
         3. Fallback model, original prompt, routing=None, options=None,
            temperature=0.0, ``max_tokens`` unchanged - fired when the primary
-           exhausted its API-error retries (429/5xx/timeouts, from (1) or
-           (2)), when (1) saturated the cap with empty content, or when (2)
-           is empty AND a fallback_model is set.
+           exhausted its API-error retries (429/5xx/timeouts and calls
+           abandoned at the per-call ceiling, from (1) or (2)), when (1)
+           saturated the cap with empty content, or when (2) is empty AND a
+           fallback_model is set. Note that a *survivable* timeout does not
+           reach this step: the retry re-routes the same model (D-0022).
         4. Give up: an empty body is returned and mapped to ``NEEDS REVIEW``
            by ``evaluate_response``; an API-error exhausted on the fallback
            model too propagates to ``run_judge`` (also NEEDS REVIEW).
@@ -782,6 +933,9 @@ def _run_layered_retry(
             (D-0021). It persists on the fallback path because it bounds
             latency and cost regardless of which model serves the request;
             ``None`` leaves the provider's own default in place.
+        timeout_records: optional collector; every attempt abandoned at
+            ``CALL_TIMEOUT_SECONDS`` appends its detail dict so the caller
+            can report the count (D-0022).
 
     Returns:
         ``(response_body, used_fallback, final_model, attempt_count)``.
@@ -791,19 +945,34 @@ def _run_layered_retry(
         """Fallback attempt on the original prompt (ADR-0021: routing=None,
         options=None, temperature=0.0). ``max_tokens`` persists — it is a
         request-level latency/cost bound (D-0021), not routing or quality
-        policy, and the fallback model may have a larger ceiling.
+        policy, and the fallback model may have a larger ceiling. Timeouts
+        are collected the same way as on the primary path (D-0022).
         Returns ``(body, attempt_count)``."""
         log(f"[INFO] Judge {judge_key} fell back to model {fallback_model}")
         return (
             _call_with_api_retry(
-                fallback_model, messages, api_key, None, 0.0, None, max_tokens
+                fallback_model,
+                messages,
+                api_key,
+                None,
+                0.0,
+                None,
+                max_tokens,
+                timeout_records,
             ),
             count,
         )
 
     try:
         response_body = _call_with_api_retry(
-            model, messages, api_key, routing, temperature, options, max_tokens
+            model,
+            messages,
+            api_key,
+            routing,
+            temperature,
+            options,
+            max_tokens,
+            timeout_records,
         )
     except Exception as exc:
         # API-error exhaustion: the transport is unusable, so the
@@ -849,6 +1018,7 @@ def _run_layered_retry(
                 temperature,
                 options,
                 max_tokens,
+                timeout_records,
             )
         except Exception as exc:
             if not fallback_model:
@@ -887,9 +1057,10 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
     Returns:
         ``(response_body: str, metadata: dict)`` where metadata is
         ``{"used_fallback": bool, "final_model": str, "attempt_count": int,
-        "usage": dict}`` — usage carries the response's actual model,
-        serving provider, token counts, and cost (``None`` fields when the
-        provider omits them).
+        "timeouts": int, "usage": dict}`` — usage carries the response's
+        actual model, serving provider, token counts, cost, and the number
+        of calls abandoned at the per-call ceiling (D-0022); ``None`` fields
+        where the provider omits them.
     """
     cfg = resolve_model_config(judge_key)
     model = cfg["model"]
@@ -911,6 +1082,7 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
         span.set_attribute(INPUT_VALUE, json.dumps(messages))
         log(f"[INFO] Running judge {judge_key} using model: {model}")
 
+        timeout_records: list[dict[str, Any]] = []
         response_body, used_fallback, final_model, attempt_count = _run_layered_retry(
             judge_key,
             model,
@@ -921,9 +1093,11 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
             temperature,
             options,
             max_tokens,
+            timeout_records,
         )
 
         usage = extract_usage(response_body)
+        usage["timeouts"] = len(timeout_records)
         span.set_attribute(OUTPUT_VALUE, response_body)
         span.set_attribute("used_fallback", used_fallback)
         span.set_attribute("final_model", final_model)
@@ -937,10 +1111,13 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
             )
         if usage.get("cost") is not None:
             span.set_attribute("llm.usage.cost_usd", usage["cost"])
+        if timeout_records:
+            span.set_attribute("llm.timeouts", len(timeout_records))
         return response_body, {
             "used_fallback": used_fallback,
             "final_model": final_model,
             "attempt_count": attempt_count,
+            "timeouts": len(timeout_records),
             "usage": usage,
         }
 
@@ -1589,6 +1766,13 @@ def run_judge(
     ``llm_caller``. Aggregation: FAIL in any chunk → judge FAIL; any NEEDS
     REVIEW → judge NEEDS REVIEW; all PASS → judge PASS.
 
+    The multi-batch path is additionally bounded in wall-clock terms: the
+    per-call ceiling bounds one call, not a run of them, so the whole judge
+    may spend at most ``API_RETRY_BUDGET_SECONDS`` (D-0022). Once that is
+    spent, the remaining batches are NOT evaluated and the judge returns
+    NEEDS REVIEW naming how many batches were skipped — a truncated
+    evaluation must never look like a PASS.
+
     status is normalized to uppercase ('PASS', 'FAIL', 'NEEDS REVIEW').
     On an exception the judge returns 'NEEDS REVIEW' with the error captured.
     used_fallback and final_model are False/None on error paths.
@@ -1653,8 +1837,26 @@ def run_judge(
             f"{len(chunks)} files → {len(batches)} batches (budget={budget})"
         )
 
+        # Per-judge wall-clock bound (D-0022): the per-call ceiling bounds one
+        # call, so a many-batch judge needs its own bound or the run can still
+        # be long. Reusing the retry budget keeps one scale: a judge may spend
+        # at most what one budgeted call may spend.
+        judge_deadline = time.monotonic() + API_RETRY_BUDGET_SECONDS
+
         chunk_results: list[tuple[str, str, list[str], str | None, bool, str]] = []
-        for batch in batches:
+        for index, batch in enumerate(batches):
+            if time.monotonic() >= judge_deadline:
+                skipped = len(batches) - index
+                message = (
+                    f"judge wall-clock budget ({API_RETRY_BUDGET_SECONDS}s) "
+                    f"exhausted after {index} of {len(batches)} batches; "
+                    f"{skipped} batch(es) not evaluated"
+                )
+                log(f"[ERR] Judge {judge_key}: {message}")
+                chunk_results.append(
+                    ("NEEDS REVIEW", "", [], message, False, cfg["model"])
+                )
+                break
             enriched_batch = _enrich_chunk(batch, resolve_workspace_dir())
             result = _run_single_chunk(
                 judge_key,
@@ -1704,6 +1906,12 @@ def _run_single_chunk(
         used_fallback = metadata.get("used_fallback", False)
         final_model = metadata.get("final_model", default_model)
         usage = metadata.get("usage") or extract_usage(raw_resp)
+        if isinstance(usage, dict):
+            # Copy before decorating: the metadata dict belongs to the caller.
+            # ``timeouts`` (D-0022) counts calls abandoned at the ceiling; a
+            # caller that does not report it contributes zero.
+            usage = dict(usage)
+            usage.setdefault("timeouts", metadata.get("timeouts", 0))
         if usage_records is not None:
             usage_records.append(usage)
         verdict, reasoning, findings = evaluate_response(raw_resp)

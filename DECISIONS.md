@@ -886,3 +886,109 @@ None.
   ecosystem; rationale for bounding the request rather than the reasoning
   budget (a per-model reasoning knob cannot bound untagged models).
 
+## D-0022 — Judge calls carry a per-call wall-clock ceiling, and a timeout retry releases a pinned route
+
+- Date: 2026-09-23
+- Status: Accepted
+
+### Decision
+
+Every OpenRouter judge call is bounded in wall-clock terms, and a call that
+exceeds that bound is retried with its provider route released:
+
+1. **Ceiling.** `REVIEW_CALL_TIMEOUT_SECONDS` (default `300`) caps one
+   transport call. The transport runs on a daemon worker thread and the
+   waiting side enforces the deadline (`thread.join`); a worker that
+   outlives it cannot be killed, so it is abandoned — its result is
+   discarded, and it dies when its own socket operations time out or the
+   process exits. This closes the exact gap: `urlopen(timeout=...)` bounds
+   individual socket operations, not one generation, so a slow provider
+   looks like ordinary latency for as long as it streams. The abandoned
+   call may still complete (and be billed) server-side; the point is that
+   the run stops waiting for it and re-routes immediately.
+2. **Retryable, distinctly logged.** A timeout is retryable with no
+   server-requested wait and gets its own log line
+   (`[OPENROUTER] timeout model=… provider=… after=…s ceiling=…s
+   attempt=… next_route=auto`) plus a step-summary row, so a slow route is
+   never confused with ordinary latency. `provider=` names the *requested*
+   route (pinned order, lowercased as sent, or `auto`): a timed-out call
+   reports no usage, so the actually-serving provider is unknown.
+3. **Re-route on retry.** After a timeout, every subsequent attempt of that
+   call drops the pinned route (`routing=None`), which re-enables
+   OpenRouter's own provider failover and keeps the retry off the slow
+   provider. The **model is unchanged**: this is a latency fix, not a
+   verdict-quality change. The retry keeps the standard escalating
+   schedule, and `REVIEW_RETRY_BUDGET_SECONDS` remains the outer bound of
+   one call.
+4. **KPI field.** The KPI table gained a `Timeouts` column; the count
+   travels as `usage["timeouts"]` (summed per judge and in the Total row)
+   and as `llm.timeouts` on the LLM span, so a slow route is visible in the
+   posted review rather than only in the log.
+5. **Per-judge bound on the batch path.** The ceiling is per **call**, so a
+   many-batch judge needs its own bound or a run can still be long. The
+   multi-batch path may spend at most `REVIEW_RETRY_BUDGET_SECONDS` in
+   total; batches left unevaluated past that point produce a NEEDS REVIEW
+   verdict naming how many were skipped — a truncated review must never
+   read as a PASS.
+6. **A timeout alone is NOT a model-fallback trigger.** The attempt is
+   retried on the same model, auto-routed. `fallback_model` stays reserved
+   for the two triggers ADR-0021/D-0021 already define: exhausted
+   API-error retries and empty content. A timeout can still *lead* to the
+   fallback, but only through ordinary exhaustion of the retry budget,
+   which the existing ladder already handles.
+
+The verdict block (D-0002), the exit-code contract (D-0014), the completion
+cap (D-0021), and the empty-content nudge ladder are unaffected: a timeout
+is not empty content, and the model that produces the verdict is the
+configured one.
+
+### Rationale
+
+Judge duration was previously unbounded in two independent ways. The
+completion cap (D-0021) bounds the degenerate *generation*; it does not
+bound *duration* — the motivating 564.1s response was a legitimate PASS at
+19,540 tokens, well under the cap, and an attempt pinned to a narrower
+route ran past 48 minutes before it was cancelled. A pinned `routing` list
+made that worse than a latency problem: `provider.order` with
+`allow_fallbacks: false` also removes the escape hatch, so every retry
+re-entered the same provider, and the measured variance on one model was
+roughly 7x on route alone (pinned/narrow lists 564.1s vs. auto-routed
+20.4–46.0s on near-identical diffs).
+
+Releasing the route rather than switching the model is the smallest change
+that addresses both halves: the slow route is abandoned, and the retry can
+reach a provider that serves the same model quickly. It also works when no
+`fallback_model` is configured — relying on the fallback alone would leave
+the sticky-pinned defect in place for every consumer that has not set one.
+
+The per-judge bound is deliberately expressed with the existing retry
+budget rather than a new knob: one scale, and the same number that already
+means "the maximum wall clock one budgeted call may spend". Exceeding it
+yields NEEDS REVIEW (merge-blocking) instead of a silent PASS for a review
+that only saw part of the diff.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- [OpenRouter — Provider Routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+  — `order` pins the provider sequence and `allow_fallbacks` (default
+  `true`) governs provider failover; the pinned-plus-no-fallbacks shape is
+  what makes a slow provider sticky across retries.
+- [OpenRouter — How model routing works: providers, fallbacks & auto](https://openrouter.ai/blog/insights/model-routing)
+  — provider failover is automatic and on by default, model-layer fallbacks
+  are opt-in, and `sort` can target `price`/`throughput`/`latency`; the
+  documented route-level knobs are what the re-route releases.
+- [OpenRouter — Provider failover vs model fallbacks](https://openrouter.ai/blog/insights/reliability-failover)
+  — the two reliability layers are separate; separately confirms that a
+  failed request is not billed.
+- [ScrapingBee — How to handle timeouts in Python Requests](https://www.scrapingbee.com/blog/python-requests-timeout/)
+  — connect/read timeouts are per socket operation and "none of this is
+  strict wall-clock"; the reason a client-side deadline wrapper is required
+  instead of relying on `urlopen(timeout=...)`.
+- Issue #44 and its measurements (social-engagement-engine PR #19 runs
+  35724530627, 35727504470, 35707444272; cancelled attempt 35719748088) —
+  the 7x route variance, the 564.1s legitimate PASS, and the >48-minute
+  cancelled run.

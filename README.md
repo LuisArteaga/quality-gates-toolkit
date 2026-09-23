@@ -440,6 +440,34 @@ output ceiling (observed: 131,072 tokens over ~23 min, empty content):
 
 See D-0021.
 
+**Per-call wall-clock ceiling** — `urlopen`'s socket timeout bounds one
+network operation, not one generation, so a slow provider can spend many
+minutes on a single judge call while looking like ordinary latency
+(observed: 564s for one legitimate verdict, and one pinned route past
+48 minutes):
+
+- `REVIEW_CALL_TIMEOUT_SECONDS` (default `300`) abandons a call that
+  exceeds the ceiling, logs a distinct
+  `[OPENROUTER] timeout model=… provider=… after=…s` line (`provider` is
+  the *requested* route — a timed-out call reports no usage, so the serving
+  provider is unknown), and retries it. The KPI table gained a **Timeouts**
+  column, so a slow route is visible instead of hiding inside the Duration
+  column.
+- The retry **releases a pinned route**: `provider.order` is dropped and
+  `allow_fallbacks` returns to OpenRouter's default. Pinned routing
+  disables provider failover, so repeating it would re-enter the same slow
+  provider — the reason a pinned judge can be 7x slower than the same
+  model auto-routed. The **model is unchanged**: the verdict still comes
+  from the model you configured, and the re-route is logged.
+- The retry keeps the standard escalating schedule, and
+  `REVIEW_RETRY_BUDGET_SECONDS` stays the outer bound of one call.
+- The ceiling applies **per call**, so a many-batch judge (diff above
+  `batch-budget-chars`) is additionally bounded by
+  `REVIEW_RETRY_BUDGET_SECONDS` in total; batches left unevaluated make
+  that judge NEEDS REVIEW rather than silently passing a truncated review.
+
+See D-0022.
+
 Judges also read the **caller's** `docs/context.md` and `docs/adr/*.md` (if
 present) as architecture context — your documented decisions directly shape
 the architecture verdict.
@@ -455,7 +483,8 @@ The workflows set these for you from the inputs above; when running
 | `AGENT_MODEL` | Global model override (above `factory.json`, below per-node). |
 | `REVIEW_CONFIG_PATH` | Judge config path; set from `config-path` (default `config/factory.json`). |
 | `REVIEW_BATCH_BUDGET_CHARS` | Per-batch character budget for the judge diff; set from `batch-budget-chars` (effective default `200000`). |
-| `REVIEW_RETRY_BUDGET_SECONDS` | OpenRouter retry budget in seconds before the run gives up (default `2700` = 45 min; retries are 429/5xx-aware). |
+| `REVIEW_RETRY_BUDGET_SECONDS` | OpenRouter retry budget in seconds before the run gives up (default `2700` = 45 min; retries are 429/5xx-aware, and it is also the total wall-clock bound of one multi-batch judge). |
+| `REVIEW_CALL_TIMEOUT_SECONDS` | Per-call wall-clock ceiling in seconds (default `300`, must be a positive integer); a call exceeding it is abandoned and retried with a pinned route released (D-0022). |
 | `REVIEW_DEBUG` | Set to `1` to log request payloads and error bodies. |
 | `REVIEW_WORKSPACE_DIR` | Overrides the repository root the diff and docs context resolve against (default: `GITHUB_WORKSPACE/repo`). |
 | `AGENT_LOG_PATH` | Overrides the local JSONL trace-log location (CI default: `agent_logs/` under the runner workspace; `/tmp/agent_logs` fallback). |
@@ -580,6 +609,11 @@ Two loud-fail paths to expect:
   transport failed (typically OpenRouter HTTP 429). Retries consume
   `REVIEW_RETRY_BUDGET_SECONDS` (default 45 min); rerun the failed job once
   quota resets. A review *with* findings is a real verdict, not an outage.
+- **A judge takes tens of minutes** — a slow provider route. The call is
+  abandoned at `REVIEW_CALL_TIMEOUT_SECONDS` (default 300s) and retried on
+  the auto route; the KPI table's **Timeouts** column shows how often that
+  happened. Lower the knob if a route is consistently slow, or drop the
+  pinned `routing` for that node so OpenRouter can fail over per request.
 - **secret-scan false positive** — there is deliberately no inline
   suppression (a consumer-side skip mechanism would weaken the scanner).
   Token-shape fixes (e.g. the npm integrity-hash suppression, D-0010) ship
