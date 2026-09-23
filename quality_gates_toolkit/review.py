@@ -1255,7 +1255,14 @@ def submit_github_review(pr_number, action, body_content):
             )
 
             if ret != 0:
-                raise Exception(f"gh pr review failed: {stderr.strip()}")
+                # The prefix belongs to the raiser: main()'s undelivered-body
+                # guard logs the exception message as-is (D-0024), so the
+                # distinct "[ERR] Failed to submit GitHub review: gh pr review
+                # failed: ..." line consumers may grep is preserved.
+                raise Exception(
+                    f"Failed to submit GitHub review: gh pr review failed: "
+                    f"{stderr.strip()}"
+                )
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -2075,6 +2082,75 @@ def build_review_body(judges_data: dict) -> str:
     return combined_report
 
 
+# Undelivered review body (issue #47, D-0024). The judges' verdicts exist
+# only inside the review body, so a submission that GitHub refuses (an
+# installation token cannot approve; a repository policy can refuse the
+# review outright) used to end the run with nothing but an error line — the
+# cost was paid and the outcome was unrecoverable. The file below is written
+# ONLY when the body was not delivered, so its existence means "the verdicts
+# are here, not on the PR": that is what llm-pr-review.yml's failure-path
+# artifact step keys on, and why a green run (or a red run whose review WAS
+# posted) produces no artifact.
+REVIEW_BODY_FILENAME = "review_body.md"
+
+
+def resolve_review_body_path() -> str:
+    """Resolve where an undelivered review body is persisted.
+
+    Precedence:
+      1. ``REVIEW_BODY_PATH`` — explicit override (custom layouts, tests).
+      2. ``review_body.md`` in the current working directory — the
+         ``llm-pr-review.yml`` step runs with ``working-directory: repo``,
+         so this lands in the caller checkout under the runner workspace,
+         where the failure-path artifact step picks it up.
+    """
+    explicit = os.getenv("REVIEW_BODY_PATH")
+    if explicit:
+        return explicit
+    return os.path.join(os.getcwd(), REVIEW_BODY_FILENAME)
+
+
+def persist_review_body(body: str, judges_data: dict) -> str | None:
+    """Make a review body that could not be posted retrievable (D-0024).
+
+    Three independent channels, so the verdicts survive whatever the
+    consumer can reach: the job log (always readable), the file at
+    ``resolve_review_body_path()`` (uploaded as a failure-path artifact),
+    and a ``::error::`` annotation naming every judge's verdict (visible in
+    the checks UI without opening the log).
+
+    The file receives ``body`` byte for byte — the same bytes that would
+    have been posted — so no consumer has to parse a second format.
+
+    Returns the written path, or ``None`` when the write failed; the log
+    dump and the annotation are emitted either way.
+    """
+    verdicts = " ".join(f"{key}={judges_data[key]['status']}" for key in JUDGE_KEYS)
+
+    log(
+        "[ERR] The review was not delivered; the body below is the only "
+        "record of the judges' verdicts."
+    )
+    log(body)
+
+    path = resolve_review_body_path()
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(body)
+        log(f"[INFO] Review body written to {path}")
+    except OSError as e:
+        log(f"[WARN] Could not write the review body to {path}: {e}")
+        path = None
+
+    # A workflow command must be the first thing on the line, so this one
+    # bypasses log()'s timestamp prefix.
+    print(f"::error::LLM judge verdicts: {verdicts}")
+    return path
+
+
 def main():
     # Initialize telemetry
     init_telemetry()
@@ -2166,16 +2242,28 @@ def main():
             judge_info["final_model"] = final_model
 
         body = build_review_body(judges_data)
-        append_kpi_summary(judges_data)
-        review_action = (
-            "approve"
-            if all(judges_data[k]["status"] == "PASS" for k in JUDGE_KEYS)
-            else "request-changes"
-        )
+
+        # The judges have spoken: `body` is the only artefact carrying their
+        # verdicts, and it exists only in memory. From its build until it is
+        # delivered, no failure may discard it (D-0024) — a refused
+        # submission is the observed case (issues #43 / #47). The guard
+        # therefore sits at the body's lifetime rather than around the single
+        # submission call, so any failure while reporting the verdicts takes
+        # the same path.
         try:
+            append_kpi_summary(judges_data)
+            review_action = (
+                "approve"
+                if all(judges_data[k]["status"] == "PASS" for k in JUDGE_KEYS)
+                else "request-changes"
+            )
             submit_github_review(pr_number, review_action, body)
         except Exception as e:
-            log(f"[ERR] Failed to submit GitHub review: {e}")
+            # Only Exception is caught: an intentional SystemExit is a
+            # BaseException, so it passes through untouched and the exit-code
+            # contract cannot be broken by this guard.
+            log(f"[ERR] {e}")
+            persist_review_body(body, judges_data)
             sys.exit(1)
 
         any_failed = any(

@@ -1069,3 +1069,102 @@ None.
   rather than per judge, for the same reason: it is a property of the finding
   contract, not of one judge's criteria. It has no entry here (it predates the
   toolkit's decision log); this entry records only the finding threshold.
+
+## D-0024 — An undelivered review body is persisted, never discarded
+
+- Date: 2026-09-23
+- Status: Accepted
+
+### Decision
+
+When a run ends after the judges have spoken without delivering their review,
+the body is handed over instead of discarded:
+
+1. **Persist, log, annotate.** `review.py` writes the exact body to
+   `review_body.md` (overridable via `REVIEW_BODY_PATH`) in the step's
+   working directory, dumps the body to the job log, and emits an
+   `::error::` annotation naming every judge's verdict
+   (`syntax_lint=PASS test_coverage=FAIL …`). Three channels, because they
+   fail independently: the log is always readable, the artifact needs
+   repository access and expires, and the annotation is the only one visible
+   in the checks UI without opening anything.
+2. **The file exists only when the body was NOT delivered.** Its presence is
+   the signal — "the verdicts are here, not on the PR". `llm-pr-review.yml`
+   uploads exactly that path as the `llm-pr-review-body` artifact, gated on
+   `failure()` *and* on the file being present, with
+   `if-no-files-found: error`. A green run therefore produces no artifact,
+   and neither does a red run whose review WAS posted (a real FAIL verdict is
+   red but delivered).
+3. **The guard sits at the body's lifetime.** It wraps everything from
+   `build_review_body` until the body is delivered, not the submission call
+   alone, so any later failure in that region takes the same path. A refused
+   submission is the observed case; the placement is what makes the
+   guarantee structural rather than incidental.
+4. **Byte-identical, one format.** The persisted bytes are the bytes that
+   would have been posted — the summary table, findings, reasoning, KPI table
+   and hidden verdict block — so no consumer parses a second format.
+5. **No second submission, no changed exit codes.** Persistence is
+   observability, not a retry: a refusal is a policy/identity answer, and a
+   retry could double-post. A submission failure still exits 1 and a non-PASS
+   verdict still exits 1.
+6. **No new exposure.** The body is the content that would have been posted
+   publicly on the PR, and the artifact's audience (anyone with repository
+   read access) is a subset of the review's. Nothing is added to the body, so
+   no redaction change is implied.
+
+### Rationale
+
+The judges' verdicts exist only inside the review body. On
+social-engagement-engine PR #19 (run 35707444272, job 106679897161) all four
+judges ran for 2m17s and passed, GitHub refused the submission, and the run
+ended with one error line: `gh api …/pulls/19/reviews` returned `[]`, so the
+verdicts, all four reasoning sections and the KPI table existed only in
+memory. The consumer's contract — parse the hidden verdict block from the
+newest review, treat `has_review: false` as "not posted yet" — could not
+distinguish "judged but not delivered" from "not judged yet", and the run's
+cost had already been paid.
+
+Writing the file only on the failure path (rather than always, then deleting
+on success) is what makes the artifact itself the signal and keeps green runs
+clean; `if: failure()` alone would upload on every red run, including ones
+whose review was posted, which is why the workflow pins both halves of the
+condition. Dumping the body to the log as well is deliberate redundancy: an
+artifact requires repository access and expires, while the log is part of the
+run record, and the annotation is the only channel that surfaces the verdicts
+where a consumer looks first — the checks UI.
+
+The artifact name is fixed (`llm-pr-review-body`) and the upload deliberately
+does **not** set `overwrite`: a duplicate name can only arise from the
+documented exactly-one-rule violation (two judge composites in one PR), where
+both bodies are in the job logs anyway and a loud conflict is better than a
+silently overwritten record.
+
+The exit-code gate is untouched. The toolkit's merge gate stays "the check is
+red", and this decision only makes that red state self-documenting.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- Issue #47 — the loss, the three-channel proposal, and the explicit
+  constraints (no double-post, byte-identical body, unchanged exit codes).
+- Issue #43 and D-0005 — the submission refusal this observes (an
+  installation token cannot approve any PR; a repository policy governs
+  review state) and the action-flag rules the persistence deliberately leaves
+  untouched.
+- social-engagement-engine PR #19, run 35707444272 job 106679897161 (verdicts
+  lost) against run 35727504470 job 106744848077 (review posted, verdict block
+  readable from `…/pulls/20/reviews`) — the two outcomes a consumer could not
+  tell apart.
+- [actions/upload-artifact](https://github.com/actions/upload-artifact) —
+  `if-no-files-found` (`warn` default, `error`, `ignore`); the guarded step
+  chooses `error` so a mismatch between the file gate and the upload path
+  fails loudly rather than silently dropping the body.
+- [GitHub Docs — Contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts)
+  — the availability table lists `hashFiles` for `jobs.<job_id>.steps.if`
+  (and *not* for `jobs.<job_id>.if`), which is what makes the file-existence
+  half of the step condition expressible at step level; the function resolves
+  patterns against `GITHUB_WORKSPACE`
+  ([expressions reference](https://docs.github.com/actions/reference/evaluate-expressions-in-workflows-and-actions)).

@@ -1337,6 +1337,205 @@ class MainTests(unittest.TestCase):
         self.assertEqual(action, "request-changes")
 
 
+class UndeliveredReviewBodyTests(unittest.TestCase):
+    """Issue #47 / D-0024: a run that cannot post its review still hands the
+    judges' verdicts over.
+
+    Unlike ``MainTests``, ``sys.exit`` raises here exactly as it does in
+    production. A non-raising exit mock would let ``main()`` continue past
+    the guard, so the "nothing was persisted" assertions on the delivered
+    paths would pass for the wrong reason.
+    """
+
+    def _run_main(
+        self, judge_statuses, submit_error=None, body_path=None, kpi_error=None
+    ):
+        """Run review.main() with all externals mocked; return what it left behind.
+
+        Returns ``(exit_codes, submit_calls, stdout)``. ``submit_calls``
+        records every submission attempt *including* the one that raised, so
+        the delivered bytes can be compared against what was persisted.
+        """
+        from telemetry import DummyTracer
+
+        exit_codes: list[int] = []
+        submit_calls = []
+
+        def fake_exit(code=0):
+            exit_codes.append(code)
+            raise SystemExit(code)
+
+        def fake_submit(pr_number, action, body):
+            submit_calls.append((pr_number, action, body))
+            if submit_error is not None:
+                raise submit_error
+
+        def fake_append_kpi_summary(judges_data):
+            if kpi_error is not None:
+                raise kpi_error
+
+        def fake_run_judge(judge_key, prompt, diff_arg, api_key, usage_records=None):
+            return (
+                judge_statuses.get(judge_key, "PASS"),
+                "reasoning",
+                [],
+                None,
+                False,
+                "model-x",
+            )
+
+        env = {
+            "PR_NUMBER": "42",
+            "GH_PAT": "tok",
+            "OPENROUTER_API_KEY": "or-key",
+            "GITHUB_WORKSPACE": "/tmp/nonexistent_workspace_xyz",
+        }
+        if body_path is not None:
+            env["REVIEW_BODY_PATH"] = body_path
+        clean_env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+        clean_env.update(env)
+
+        stdin_mock = MagicMock()
+        stdin_mock.read.return_value = "some diff"
+        stdout = io.StringIO()
+
+        with (
+            patch("review.init_telemetry"),
+            patch("review.get_tracer", return_value=DummyTracer()),
+            patch("review.verify_python_syntax", return_value=(True, [], 0)),
+            patch("review.load_architecture_context", return_value="ARCH_CTX"),
+            patch("review.run_judge", side_effect=fake_run_judge),
+            patch("review.submit_github_review", side_effect=fake_submit),
+            patch("review.append_kpi_summary", side_effect=fake_append_kpi_summary),
+            patch("sys.exit", side_effect=fake_exit),
+            patch("sys.stdin", stdin_mock),
+            patch("sys.stdout", stdout),
+            patch.dict(os.environ, clean_env, clear=True),
+        ):
+            with self.assertRaises(SystemExit):
+                review.main()
+
+        return exit_codes, submit_calls, stdout.getvalue()
+
+    def test_submission_failure_persists_the_body_byte_for_byte(self):
+        """AC: a refused submission leaves the review body retrievable, with
+        its verdict block intact and byte-identical to what would have been
+        posted — a consumer never parses a second format."""
+        statuses = {k: "PASS" for k in review.JUDGE_KEYS}
+        statuses["test_coverage"] = "FAIL"
+        error = RuntimeError(
+            "Failed to submit GitHub review: gh pr review failed: refused"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            body_path = os.path.join(tmp, "nested", "review_body.md")
+            exit_codes, submit_calls, stdout = self._run_main(
+                statuses, submit_error=error, body_path=body_path
+            )
+            self.assertEqual(exit_codes, [1])
+            self.assertEqual(len(submit_calls), 1)
+            persisted = Path(body_path).read_bytes()
+
+        self.assertEqual(persisted, submit_calls[0][2].encode("utf-8"))
+        for key in review.JUDGE_KEYS:
+            self.assertIn(f"{key}: {statuses[key]}", submit_calls[0][2])
+        self.assertIn(submit_calls[0][2], stdout)
+        self.assertIn(f"Review body written to {body_path}", stdout)
+
+    def test_failure_annotation_names_every_judge_verdict(self):
+        """AC: the verdicts are readable from the checks UI alone, without
+        opening the log and without reading the toolkit's source."""
+        statuses = {k: "PASS" for k in review.JUDGE_KEYS}
+        statuses["architecture"] = "NEEDS REVIEW"
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, stdout = self._run_main(
+                statuses,
+                submit_error=RuntimeError("Failed to submit GitHub review: nope"),
+                body_path=os.path.join(tmp, "review_body.md"),
+            )
+
+        expected = " ".join(f"{key}={statuses[key]}" for key in review.JUDGE_KEYS)
+        self.assertIn(f"::error::LLM judge verdicts: {expected}", stdout)
+
+    def test_green_run_persists_nothing(self):
+        """AC: the artifact contract is "exists iff undelivered" — a
+        delivered review leaves no body file behind."""
+        with tempfile.TemporaryDirectory() as tmp:
+            body_path = os.path.join(tmp, "review_body.md")
+            exit_codes, _, stdout = self._run_main(
+                {k: "PASS" for k in review.JUDGE_KEYS}, body_path=body_path
+            )
+            self.assertEqual(exit_codes, [0])
+            self.assertFalse(os.path.exists(body_path))
+
+        self.assertNotIn("::error::LLM judge verdicts", stdout)
+
+    def test_failed_verdicts_with_a_delivered_review_persist_nothing(self):
+        """AC: exit codes unchanged — a FAIL verdict still exits 1, and since
+        the review WAS posted, the failure-path artifact has nothing to add."""
+        statuses = {k: "PASS" for k in review.JUDGE_KEYS}
+        statuses["security"] = "FAIL"
+        with tempfile.TemporaryDirectory() as tmp:
+            body_path = os.path.join(tmp, "review_body.md")
+            exit_codes, submit_calls, stdout = self._run_main(
+                statuses, body_path=body_path
+            )
+            self.assertEqual(exit_codes, [1])
+            self.assertEqual(len(submit_calls), 1)
+            self.assertFalse(os.path.exists(body_path))
+
+        self.assertNotIn("::error::LLM judge verdicts", stdout)
+
+    def test_guard_covers_a_failure_after_the_judges_spoke(self):
+        """AC (#47 "the guard belongs where the body is built"): a failure
+        that is not the submission call — here the step-summary write — takes
+        the same path, so a future failure between the build and the exit
+        cannot silently discard the verdicts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            body_path = os.path.join(tmp, "review_body.md")
+            exit_codes, submit_calls, stdout = self._run_main(
+                {k: "PASS" for k in review.JUDGE_KEYS},
+                body_path=body_path,
+                kpi_error=RuntimeError("step summary is read-only"),
+            )
+            self.assertEqual(exit_codes, [1])
+            self.assertEqual(submit_calls, [])
+            self.assertTrue(os.path.exists(body_path))
+
+        self.assertIn("step summary is read-only", stdout)
+        for key in review.JUDGE_KEYS:
+            self.assertIn(f"{key}=PASS", stdout)
+
+    def test_unwritable_body_path_still_dumps_and_annotates(self):
+        """AC: the file is one of three channels — a path that cannot be
+        written must not cost the log dump or the annotation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = os.path.join(tmp, "not-a-directory")
+            Path(blocker).write_text("")
+            body_path = os.path.join(blocker, "review_body.md")
+            exit_codes, _, stdout = self._run_main(
+                {k: "PASS" for k in review.JUDGE_KEYS},
+                submit_error=RuntimeError("Failed to submit GitHub review: nope"),
+                body_path=body_path,
+            )
+            self.assertEqual(exit_codes, [1])
+
+        self.assertIn(f"Could not write the review body to {body_path}", stdout)
+        self.assertIn("::error::LLM judge verdicts: ", stdout)
+        self.assertIn("syntax_lint: PASS", stdout)
+
+    def test_body_path_env_override_wins_and_default_is_the_working_directory(self):
+        """The override exists so the path is a knob, not a hidden constant;
+        the default is the step's working directory, which is what
+        llm-pr-review.yml uploads."""
+        with patch.dict(os.environ, {"REVIEW_BODY_PATH": "/tmp/explicit.md"}):
+            self.assertEqual(review.resolve_review_body_path(), "/tmp/explicit.md")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                review.resolve_review_body_path(),
+                os.path.join(os.getcwd(), review.REVIEW_BODY_FILENAME),
+            )
+
+
 class LayeredRetryPolicyTests(unittest.TestCase):
     """Tests for ``_run_layered_retry`` directly.
 
@@ -3009,6 +3208,25 @@ class SubmitGitHubReviewTests(unittest.TestCase):
         ]
         review_cmd, _ = self._submit(responses, "request-changes")
         self.assertIn("--request-changes", review_cmd)
+
+    def test_refused_submission_raises_with_the_greppable_prefix(self):
+        """AC (#47): the failure carries the distinct prefix that main()'s
+        undelivered-body guard logs verbatim (D-0024), so a consumer grepping
+        "[ERR] Failed to submit GitHub review" keeps working — and the gh
+        diagnostic stays attached."""
+        responses = [
+            (0, self.PR_AUTHOR + "\n", ""),
+            (0, self.JUDGE_USER + "\n", ""),
+            (1, "", "gh: Reviews are disabled for this repository"),
+        ]
+        runner, _ = self._fake_run_command(responses)
+        with patch.object(review, "run_command", side_effect=runner):
+            with self.assertRaises(Exception) as ctx:
+                review.submit_github_review(1, "approve", "review body")
+
+        message = str(ctx.exception)
+        self.assertIn("Failed to submit GitHub review: gh pr review failed:", message)
+        self.assertIn("Reviews are disabled for this repository", message)
 
 
 class BatchBudgetTests(unittest.TestCase):
