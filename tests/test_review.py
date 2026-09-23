@@ -2617,16 +2617,33 @@ class SubmitGitHubReviewTests(unittest.TestCase):
         self.assertEqual(len(review_cmds), 1)
         return review_cmds[0], calls
 
-    def test_user_lookup_failure_falls_back_to_verdict_action(self):
-        """AC: installation tokens get 403 on /user; submission must still
-        proceed with the verdict-derived action instead of crashing."""
+    def test_installation_token_all_pass_posts_comment_review(self):
+        """AC (#43): an installation token gets HTTP 403 on /user, and
+        GitHub forbids it from approving ANY pull request - so an all-PASS
+        verdict must be submitted as a comment review, never `--approve`,
+        and the run must not crash."""
         responses = [
             (0, self.PR_AUTHOR + "\n", ""),  # gh pr view -> author
             (1, "", "gh: Resource not accessible by integration (HTTP 403)"),
             (0, "", ""),  # gh pr review
         ]
+        review_cmd, _ = self._submit(responses, "approve")
+        self.assertIn("--comment", review_cmd)
+        self.assertNotIn("--approve", review_cmd)
+        self.assertIn("--body-file", review_cmd)
+
+    def test_installation_token_failed_verdict_also_posts_comment_review(self):
+        """AC (#43): the identity-less action is verdict-independent - a
+        FAIL/NEEDS REVIEW verdict posts the same comment review, so the
+        review state never reveals the verdict (the exit code does)."""
+        responses = [
+            (0, self.PR_AUTHOR + "\n", ""),
+            (1, "", "gh: Resource not accessible by integration (HTTP 403)"),
+            (0, "", ""),
+        ]
         review_cmd, _ = self._submit(responses, "request-changes")
-        self.assertIn("--request-changes", review_cmd)
+        self.assertIn("--comment", review_cmd)
+        self.assertNotIn("--request-changes", review_cmd)
         self.assertIn("--body-file", review_cmd)
 
     def test_judge_user_equal_to_pr_author_downgrades_to_comment(self):
@@ -2650,6 +2667,17 @@ class SubmitGitHubReviewTests(unittest.TestCase):
         ]
         review_cmd, _ = self._submit(responses, "approve")
         self.assertIn("--approve", review_cmd)
+
+    def test_distinct_user_and_failing_verdict_requests_changes(self):
+        """AC: a PAT run keeps the verdict-driven action in both
+        directions - FAIL/NEEDS REVIEW requests changes."""
+        responses = [
+            (0, self.PR_AUTHOR + "\n", ""),
+            (0, self.JUDGE_USER + "\n", ""),
+            (0, "", ""),
+        ]
+        review_cmd, _ = self._submit(responses, "request-changes")
+        self.assertIn("--request-changes", review_cmd)
 
 
 class BatchBudgetTests(unittest.TestCase):

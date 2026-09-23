@@ -982,24 +982,35 @@ def submit_github_review(pr_number, action, body_content):
 
         # Get Current User. A user-context token (PAT) can always do this;
         # the repository GITHUB_TOKEN fallback is an installation token and
-        # gets HTTP 403 on /user. In that case proceed WITHOUT the identity
-        # guard: the verdict decides the action, and GitHub itself rejects
-        # review actions on one's own PR server-side, so the guard is a
-        # convenience for trusted-identity flows (D-0005), not a boundary.
+        # gets HTTP 403 on /user. An installation token cannot APPROVE a
+        # pull request at all - independent of authorship, the repository
+        # setting "Allow GitHub Actions to create and approve pull
+        # requests" governs it - so an identity-less submission never uses
+        # the verdict-derived action; it always posts a comment review,
+        # whose body (verdict block, reasoning, KPI table) is identical.
+        # The check's exit code, not the review state, is the merge gate.
+        # The self-review identity guard for user tokens is
+        # unchanged (D-0005).
         user_cmd = ["gh", "api", "user", "--jq", ".login"]
         ret, stdout, stderr = run_command(user_cmd)
         if ret != 0:
             log(
                 f"[WARN] Could not fetch current user ({stderr.strip()}); "
-                "submitting with the verdict action (self-review guard "
-                "unavailable for non-user tokens)."
+                "submitting a comment review (installation tokens cannot "
+                "approve; self-review guard unavailable for non-user "
+                "tokens)."
             )
             current_user = None
         else:
             current_user = stdout.strip()
 
         # Determine appropriate review action flag
-        if current_user is not None and current_user == pr_author:
+        if current_user is None:
+            # Identity-less (installation token): --approve is forbidden
+            # outright, so a verdict-driven action would only ever work for
+            # the failing outcomes. Keep the review state neutral.
+            action_flag = "--comment"
+        elif current_user == pr_author:
             action_flag = "--comment"
         elif action == "approve":
             action_flag = "--approve"

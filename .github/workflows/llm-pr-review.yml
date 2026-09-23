@@ -15,9 +15,13 @@ name: LLM PR review (reusable)
 #   GITHUB_TOKEN covers the caller checkout. (The origin design needed a PAT
 #   only because the tooling lived in a private repo — that flaw is gone.)
 # - judge-token is OPTIONAL and falls back to github.token. Plain consumers
-#   get reviews authored by github-actions[bot]. Consumers that verify
-#   review authorship (trusted-identity automerge models) must pass a PAT
-#   whose owner matches their trusted judge identity.
+#   get reviews authored by github-actions[bot]; an installation token
+#   cannot approve a pull request at all (repository setting "Allow GitHub
+#   Actions to create and approve pull requests"), so those reviews are
+#   always posted as comment reviews carrying the identical verdict block.
+#   Consumers that verify review authorship (trusted-identity automerge
+#   models) or want a verdict-driven review state must pass a PAT whose
+#   owner matches their trusted judge identity.
 # - Judge model configuration is consumer-owned: resolve config-path from
 #   the caller tree (default config/factory.json). See config/factory.example.json
 #   for both routing modes.
@@ -59,8 +63,10 @@ on:
       judge-token:
         description: >-
           Optional GitHub token used to post the review. Falls back to
-          github.token. Pass a PAT only if your consumer verifies review
-          authorship (trusted-identity automerge).
+          github.token, which posts a comment review (installation tokens
+          cannot approve). Pass a PAT if your consumer verifies review
+          authorship (trusted-identity automerge) or needs the review
+          state to follow the verdict.
         required: false
 
 permissions:

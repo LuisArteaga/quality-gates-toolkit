@@ -127,6 +127,20 @@ their integration docs, not in the generic workflow contract.
   the guard is a convenience, not a security boundary. Consumers needing
   trusted identity pass a user PAT as `judge-token` (convention:
   `JUDGE_GH_TOKEN`).
+- 2026-09-23 (#43): Identity-less (installation-token) submission no longer
+  uses the verdict-derived action. GitHub forbids installation tokens from
+  approving pull requests outright — the repository setting "Allow GitHub
+  Actions to create and approve pull requests" governs it, independent of
+  authorship — so the all-PASS path submitted `--approve`, was refused, and
+  ended as a permanently red judge job with the verdicts lost (no review
+  body, hence no verdict block for consumer automation to parse).
+  Installation tokens now always submit `--comment`; `--approve` requires a
+  user-identity token that is not the PR author; FAIL / NEEDS REVIEW still
+  maps to `--request-changes` for user tokens. The 2026-09-05 rationale
+  conflated the approve prohibition with the server-side self-approval
+  rejection — they are different rules with different scopes. The
+  exit-code gate (any FAIL / NEEDS REVIEW ⇒ exit 1) is unchanged and
+  remains the merge gate.
 
 ## D-0006 — Hybrid workflow architecture
 
