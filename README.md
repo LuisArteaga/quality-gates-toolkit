@@ -201,16 +201,30 @@ usage (`enable-llm-review: false`, the default) reads no secrets at all.
 ### `JUDGE_GH_TOKEN`
 
 - **Optional.** When omitted, the review falls back to the caller's
-  `github.token` and reviews are authored by `github-actions[bot]` — fine
-  for plain consumers.
+  `github.token` and reviews are authored by `github-actions[bot]`. That is
+  enough for the default contract: the review is posted as a **comment
+  review** (state `COMMENTED`) and the check's exit code — not the review
+  state — is the merge gate (FAIL / NEEDS REVIEW exits nonzero; see
+  [Consuming verdicts](#consuming-verdicts)).
+- **Why an installation token cannot do more:** GitHub forbids the Actions
+  token from approving a pull request at all — the repository setting
+  "Allow GitHub Actions to create and approve pull requests" governs it,
+  independent of who authored the PR. The toolkit therefore never submits
+  `--approve` without a user identity; an all-PASS verdict from a plain
+  consumer still posts its verdict block, per-judge reasoning and KPI
+  table, only as a comment.
 - **When to pass a user PAT:**
+  - *Verdict-driven review state:* with a PAT whose owner differs from the
+    PR author, the review state follows the verdict — `--approve` on
+    all-PASS, `--request-changes` on FAIL / NEEDS REVIEW.
   - *Trusted-identity automerge:* if your pipeline verifies that the review
     author equals a known judge identity, a bot-authored review does not
     match. Pass a PAT whose account is the trusted judge identity.
   - *Self-review guard:* the `github.token` fallback is an installation
-    token (HTTP 403 on `GET /user`), so the guard that skips submitting a
-    review on the judge's own PR cannot run; GitHub still rejects such
-    reviews server-side. A user PAT makes the guard functional.
+    token (HTTP 403 on `GET /user`), so the guard that downgrades a review
+    on the judge's own PR to a comment cannot run. A user PAT makes the
+    guard functional — though it is a convenience, not a boundary: GitHub
+    rejects review actions on one's own PR server-side.
 - **Required scopes:**
   - Classic PAT: `repo` for private repositories; `public_repo` suffices
     for public ones.
