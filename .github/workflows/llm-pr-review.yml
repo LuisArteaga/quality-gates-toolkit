@@ -150,3 +150,19 @@ jobs:
             excludes+=(":(exclude)$p")
           done
           git diff -w "origin/${base_ref}...HEAD" -- . "${excludes[@]}" | python3 ../toolkit/scripts/review.py
+
+      - name: Upload undelivered review body
+        # The judges' verdicts live only inside the review body. When the run
+        # ends without posting it — a submission GitHub refuses, e.g. a
+        # repository policy or a token that cannot review (issues #43 / #47)
+        # — the file review.py wrote is the only retrievable record, so it is
+        # uploaded exactly then. Both guards are load-bearing: `failure()`
+        # keeps a green run artifact-free, and the hashFiles check keeps a
+        # red run whose review WAS posted artifact-free too (the body is only
+        # written when it was not delivered).
+        if: ${{ failure() && hashFiles('repo/review_body.md') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: llm-pr-review-body
+          path: repo/review_body.md
+          if-no-files-found: error

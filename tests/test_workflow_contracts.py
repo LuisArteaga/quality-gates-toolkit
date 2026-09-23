@@ -30,6 +30,9 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   the ordering policy internally, default their own language's gates ON,
   keep the judge optional (exactly-one rule across composites), and the
   polyglot composite neither grows nor references them.
+- D-0024 undelivered review body: a run that ends without posting its review
+  persists the exact body and uploads it as a failure-path artifact, gated so
+  that only an undelivered body produces one.
 """
 
 from pathlib import Path
@@ -328,6 +331,42 @@ def test_judge_token_is_optional_with_github_token_fallback():
 def test_llm_review_validates_openrouter_key_before_use():
     raw = (WORKFLOWS / "llm-pr-review.yml").read_text()
     assert "openrouter-api-key secret not configured" in raw
+
+
+# ---------------------------------------------------------------------------
+# D-0024: an undelivered review body is handed over, never discarded
+# ---------------------------------------------------------------------------
+
+
+def _undelivered_body_step() -> dict[str, Any]:
+    steps = _jobs(_load("llm-pr-review.yml"))["llm-pr-review"]["steps"]
+    uploads = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
+    assert len(uploads) == 1, "llm-pr-review.yml must upload exactly one artifact"
+    return uploads[0]
+
+
+def test_undelivered_review_body_upload_is_failure_and_file_gated():
+    """AC (#47): the artifact exists iff the review was NOT delivered. Both
+    guards are load-bearing — `failure()` keeps a green run artifact-free,
+    and the file check keeps a red run whose review WAS posted artifact-free
+    too (a real FAIL verdict is red, but its verdicts are on the PR)."""
+    step = _undelivered_body_step()
+    condition = str(step["if"])
+    assert "failure()" in condition
+    assert "hashFiles(" in condition
+    assert step["with"]["if-no-files-found"] == "error"
+
+
+def test_undelivered_review_body_upload_matches_the_reviewer_contract():
+    """The workflow path and the writer are two halves of one contract: the
+    artifact must point at the file review.py actually writes (D-0024)."""
+    from quality_gates_toolkit import review
+
+    step = _undelivered_body_step()
+    assert step["with"]["path"] == (
+        f"{CALLER_CHECKOUT_PATH}/{review.REVIEW_BODY_FILENAME}"
+    )
+    assert step["with"]["name"] == "llm-pr-review-body"
 
 
 # ---------------------------------------------------------------------------

@@ -502,6 +502,7 @@ The workflows set these for you from the inputs above; when running
 | `REVIEW_CALL_TIMEOUT_SECONDS` | Per-call wall-clock ceiling in seconds (default `300`, must be a positive integer); a call exceeding it is abandoned and retried with a pinned route released (D-0022). |
 | `REVIEW_DEBUG` | Set to `1` to log request payloads and error bodies. |
 | `REVIEW_WORKSPACE_DIR` | Overrides the repository root the diff and docs context resolve against (default: `GITHUB_WORKSPACE/repo`). |
+| `REVIEW_BODY_PATH` | Where a review body that could NOT be posted is written (default: `review_body.md` in the step's working directory). `llm-pr-review.yml` uploads exactly that file as the `llm-pr-review-body` artifact (D-0024). |
 | `AGENT_LOG_PATH` | Overrides the local JSONL trace-log location (CI default: `agent_logs/` under the runner workspace; `/tmp/agent_logs` fallback). |
 
 ### Telemetry export (opt-in)
@@ -624,6 +625,12 @@ Two loud-fail paths to expect:
   transport failed (typically OpenRouter HTTP 429). Retries consume
   `REVIEW_RETRY_BUDGET_SECONDS` (default 45 min); rerun the failed job once
   quota resets. A review *with* findings is a real verdict, not an outage.
+- **Review job red and no review was posted at all** — the submission was
+  refused (a token that cannot review, a repository policy, a PR that
+  vanished). The verdicts are not lost: the job log carries the full body,
+  the run uploads it as the `llm-pr-review-body` artifact, and the checks UI
+  shows a `LLM judge verdicts: …` annotation. Nothing was posted, so a rerun
+  cannot double-post (D-0024).
 - **A judge takes tens of minutes** — a slow provider route. The call is
   abandoned at `REVIEW_CALL_TIMEOUT_SECONDS` (default 300s) and retried on
   the auto route; the KPI table's **Timeouts** column shows how often that
@@ -649,6 +656,12 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 - To automerge on verdicts, parse the hidden block (an HTML comment in the
   review body). Verify the review author against a trusted judge identity —
   the reason `judge-token` exists (see [Secrets](#secrets)).
+- A red run does not always mean a posted review: when the submission was
+  refused, the same body is still retrievable from the `llm-pr-review-body`
+  artifact (uploaded only on that path, D-0024) and the checks UI annotates
+  the verdicts. So `has_review: false` distinguishes "judged but not
+  delivered" from "not judged yet" — read the artifact before treating the
+  run as opaque.
 
 ## Versioning
 
