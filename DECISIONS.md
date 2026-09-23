@@ -992,3 +992,80 @@ None.
   35724530627, 35727504470, 35707444272; cancelled attempt 35719748088) —
   the 7x route variance, the 564.1s legitimate PASS, and the >48-minute
   cancelled run.
+
+## D-0023 — A judge finding means "must change before merge"; the verdict stays severity-blind
+
+- Date: 2026-09-23
+- Status: Accepted
+
+### Decision
+
+What a judge may report as a **finding** is defined by a promotion threshold
+stated in the judge prompts — not by the severity label carried with it:
+
+1. **Threshold.** An item becomes a finding only if it must change before
+   merge: if the diff shipped as-is, a maintainer of the repository would be
+   entitled to block the merge over it. Every other observation belongs in
+   the reasoning block, optionally under a `Minor observations` heading —
+   cosmetic notes (a missing trailing newline at EOF, a whitespace or
+   formatting wobble, a naming preference), optional suggestions, and
+   observations the judge weighed and judged acceptable. The rule is one
+   shared text spliced into every judge's scoring-rule section, so the four
+   judges cannot drift apart, and it is stated next to the PASS/FAIL
+   definition because that is where the judge decides whether to emit a
+   finding.
+2. **Not a downgrade licence.** A genuine failure of the judge's own criteria
+   — a convention violation, a missing test for changed logic, a verifiable
+   vulnerability — is always a finding, however small the fix.
+3. **Severity stays descriptive.** `evaluate_response` still derives FAIL
+   from the presence of any parsed finding; the `severity` value is recorded
+   and rendered in the review body but participates in no verdict semantics.
+   The hidden verdict block (D-0002) and the all-or-nothing merge gate are
+   unchanged.
+4. **Prompt-level, deliberately.** The gate-level alternative — `BLOCKER` /
+   `WARNING` fail while `NIT` / `SUGGESTION` annotate only — is explicitly
+   **not** adopted: it would make the merge gate a function of a
+   model-assigned label rather than of the presence of a blocking item, and
+   it would put severity semantics into the verdict contract every consumer
+   parses. The alternative is recorded here so it is not reintroduced by
+   accident; adopting it later is a new decision, not an amendment.
+
+### Rationale
+
+Findings are the merge gate, so a judge's only alternatives were "say
+nothing" or "block the merge". Without a stated threshold, helpful judge
+behaviour read as failure: on social-engagement-engine PR #19 the
+architecture judge returned FAIL whose single finding was
+`[NIT] config/factory.json is missing a trailing newline at EOF`, while its
+own reasoning called the change "internally consistent" and the item
+"fixable in seconds". The consumer spent a fix commit and a full CI cycle on
+one byte, and the gate's signal — "this PR is architecturally wrong" —
+became "someone forgot a newline".
+
+The prompts already permitted observations in reasoning (the security judge,
+in the same review set, weighed mutable-tag pinning of the toolkit ref and
+reported it there rather than as a finding), so the missing piece was the
+threshold, not a new mechanism. Fixing it in the prompts keeps the
+probabilistic judgement where it belongs and leaves the deterministic
+contracts — verdict block, exit-code gate, severity rendering — untouched.
+Prompt text is a versioned artefact: consumers that snapshot the prompts
+verbatim refresh that snapshot in the same release, and the change is called
+out in the CHANGELOG section of that release.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- Issue #46 — the problem statement, the recommended prompt-level option, and
+  the gate-level alternative recorded (and rejected) above.
+- social-engagement-engine PR #19, run 35724530627 job 106735158434 — the
+  architecture verdict whose only finding was the missing trailing newline,
+  and the cost of the false block (one fix commit plus a full CI cycle on a
+  docs/config-only diff).
+- The judge-neutrality preamble (`JUDGE_NEUTRALITY_INSTRUCTIONS`, issue #61) —
+  the other cross-cutting, shared judge-prompt text, layered on at composition
+  rather than per judge, for the same reason: it is a property of the finding
+  contract, not of one judge's criteria. It has no entry here (it predates the
+  toolkit's decision log); this entry records only the finding threshold.
