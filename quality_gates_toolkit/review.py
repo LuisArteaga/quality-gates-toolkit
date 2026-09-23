@@ -80,6 +80,39 @@ def log(message):
 
 
 # Prompt definitions for LLM-as-a-Judge evaluations
+
+# Finding promotion threshold (issue #46, D-0023).
+#
+# A judge's findings list is the merge gate: any non-PASS verdict is
+# merge-blocking, and ``evaluate_response`` derives FAIL from the mere presence
+# of a finding. Without a stated threshold, a judge's only options were "say
+# nothing" or "block the merge", so helpful judge behaviour turned cosmetic
+# notes into red runs (observed: a single "[NIT] config/factory.json is missing
+# a trailing newline at EOF" failed the architecture judge on
+# social-engagement-engine PR #19 while that judge's own reasoning called the
+# change sound).
+#
+# Deliberately prompt-level (not gate-level): the severity field stays
+# descriptive and the verdict stays severity-blind, so the verdict-block
+# contract (D-0002) and the all-or-nothing rule stay unchanged. Shared across
+# the four judges for the same reason the neutrality frame is: the threshold is
+# a property of the finding contract, not of one judge's criteria.
+FINDING_PROMOTION_RULE = (
+    "- FINDING THRESHOLD (applies to every criterion in section 1): promote "
+    "an item into <findings> only if it must change before merge - if the "
+    "diff shipped as-is, a maintainer of this repository would be entitled to "
+    "block the merge over it. Everything else belongs in <reasoning>, "
+    "optionally under a 'Minor observations' heading: a cosmetic note (e.g. a "
+    "missing trailing newline at EOF, a whitespace or formatting wobble, a "
+    "naming preference), an optional suggestion, or an observation you "
+    "weighed and judged acceptable. Reporting such an item in <findings> "
+    "turns an otherwise sound PR red, so do not report it there.\n"
+    "- This threshold is not a licence to downgrade genuine violations: a "
+    "real failure of a section 1 criterion - a convention violation, a "
+    "missing test for changed logic, a verifiable vulnerability - is always a "
+    "finding, however small the fix.\n"
+)
+
 SYSTEM_PROMPT_SYNTAX_LINT = (
     "You are a code reviewer specialized in syntax validation, JSON schemas, and naming conventions.\n"
     "Review the PR diff against these specific criteria:\n"
@@ -94,8 +127,9 @@ SYSTEM_PROMPT_SYNTAX_LINT = (
     "- PASS: If there are no violations. Output an empty findings block: <findings></findings>.\n"
     "- FAIL: If one or more criteria fail. Report each violation as a JSON object on a single line inside the findings block: "
     '{"severity": "error", "message": "[QX] Details of the failure"}\n'
-    'Example: If Q3 fails: {"severity": "error", "message": "[Q3] Class FooBar does not use PascalCase"}\n\n'
-    "=== 4. EDGE-CASE HANDLING ===\n"
+    'Example: If Q3 fails: {"severity": "error", "message": "[Q3] Class FooBar does not use PascalCase"}\n'
+    + FINDING_PROMOTION_RULE
+    + "\n=== 4. EDGE-CASE HANDLING ===\n"
     "- If the diff is empty, return PASS with empty findings.\n\n"
     "=== OUTPUT FORMAT ===\n"
     "First, output your reasoning block:\n"
@@ -131,8 +165,9 @@ SYSTEM_PROMPT_TEST_COVERAGE = (
     "- PASS: If there are no violations. Output an empty findings block: <findings></findings>.\n"
     "- FAIL: If one or more criteria fail. Report each violation as a JSON object on a single line inside the findings block: "
     '{"severity": "error", "message": "[CRITERION NAME] Details of the failure"}\n'
-    'Example: {"severity": "error", "message": "[ASSERTION STRENGTH] New function compute_hash is tested without asserting its return value"}\n\n'
-    "=== 4. EDGE-CASE HANDLING ===\n"
+    'Example: {"severity": "error", "message": "[ASSERTION STRENGTH] New function compute_hash is tested without asserting its return value"}\n'
+    + FINDING_PROMOTION_RULE
+    + "\n=== 4. EDGE-CASE HANDLING ===\n"
     "- If the diff is empty, return PASS with empty findings.\n"
     "- Evaluate only what the diff itself shows. Do not speculate about whether the tests were executed, passed, or failed, and do not estimate coverage percentages or uncovered line numbers - test execution and changed-line coverage are enforced deterministically elsewhere in CI.\n\n"
     "=== OUTPUT FORMAT ===\n"
@@ -161,8 +196,9 @@ SYSTEM_PROMPT_ARCH = (
     "=== 3. SCORING RULE ===\n"
     "- PASS: If the code complies with all architectural conventions. Output an empty findings block: <findings></findings>.\n"
     '- FAIL: If any compliance deviation is found. Report each as a JSON object on a single line inside the findings block: {"severity": "bug", "message": "..."}.\n'
-    "- NEEDS REVIEW: If key context documents are missing and you cannot confirm compliance, log reasoning and output empty findings.\n\n"
-    "=== 4. EDGE-CASE HANDLING ===\n"
+    "- NEEDS REVIEW: If key context documents are missing and you cannot confirm compliance, log reasoning and output empty findings.\n"
+    + FINDING_PROMOTION_RULE
+    + "\n=== 4. EDGE-CASE HANDLING ===\n"
     "- If the prompt indicates that context files are missing, evaluate compliance purely against the general simplicity/lazy coding rules and conventional commits.\n"
     "- Do NOT flag intentional scaffolding that is explicitly requested in the issue requirements.\n"
     "- Note: Due to system-level egress sanitization, the '@' symbol used for decorators, e.g. @pytest.fixture or @unittest.skipUnless, might be received as '[EMAIL]'. Do NOT count '[EMAIL]' as invalid syntax or a malformed token; treat it as a valid '@' decorator symbol.\n"
@@ -193,8 +229,9 @@ SYSTEM_PROMPT_SECURITY = (
     "=== 3. SCORING RULE ===\n"
     "- PASS: If there are no security vulnerabilities. Output an empty findings block: <findings></findings>.\n"
     '- FAIL: If one or more verified security vulnerabilities are found. Report each as a JSON object on a single line inside the findings block: {"severity": "security", "message": "..."}.\n'
-    "- NEEDS REVIEW: If there is insufficient context to verify, explain why in reasoning and output an empty findings block.\n\n"
-    "=== 4. EDGE-CASE HANDLING ===\n"
+    "- NEEDS REVIEW: If there is insufficient context to verify, explain why in reasoning and output an empty findings block.\n"
+    + FINDING_PROMOTION_RULE
+    + "\n=== 4. EDGE-CASE HANDLING ===\n"
     "- Do NOT flag placeholder values in test files, configuration templates, or mock setups as vulnerabilities.\n"
     "- Do NOT flag intentional, safe usages of low-level commands that are thoroughly sanitised.\n"
     "- If the diff is empty, return PASS with empty findings.\n\n"
@@ -1274,6 +1311,10 @@ def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
             sev = f.get("severity", "bug").lower()
             msg = f.get("message", "").replace("\n", " ")
             findings_list.append(f"{sev}|{msg}")
+            # Any parsed finding fails the verdict. What may be promoted into
+            # <findings> is decided by the judge prompt's finding threshold
+            # (D-0023); the severity label stays descriptive and the verdict
+            # block carries no severity semantics (D-0002).
             verdict = "Fail"
         except Exception:
             continue

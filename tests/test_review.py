@@ -151,6 +151,81 @@ class JudgeNeutralityTests(unittest.TestCase):
         self.assertIn("position", text.lower())
 
 
+class FindingPromotionThresholdTests(unittest.TestCase):
+    """Tests for the finding-promotion threshold (issue #46, D-0023).
+
+    A judge finding means "this must change before merge"; every other
+    observation belongs in the reasoning. The threshold is stated in the
+    prompts (prompt-level) rather than resolved by gating on severity, so the
+    verdict stays severity-blind and the verdict-block contract is unchanged."""
+
+    def test_every_judge_prompt_states_the_threshold_in_its_scoring_rule(self):
+        """AC: each judge states the promotion rule where PASS/FAIL is defined,
+        so a cosmetic note is routed to reasoning instead of failing the PR."""
+        for key in review.JUDGE_KEYS:
+            prompt = review.JUDGE_PROMPTS[key]
+            self.assertIn(review.FINDING_PROMOTION_RULE, prompt, key)
+            scoring_rule = prompt.index("=== 3. SCORING RULE ===")
+            edge_cases = prompt.index("=== 4. EDGE-CASE HANDLING ===")
+            threshold = prompt.index(review.FINDING_PROMOTION_RULE)
+            self.assertTrue(scoring_rule < threshold < edge_cases, key)
+
+    def test_base_criteria_constants_carry_the_threshold(self):
+        """AC: the threshold also reaches consumers importing a base criteria
+        constant directly (both surfaces are exported by the judge API)."""
+        for base_prompt in (
+            review.SYSTEM_PROMPT_SYNTAX_LINT,
+            review.SYSTEM_PROMPT_TEST_COVERAGE,
+            review.SYSTEM_PROMPT_ARCH,
+            review.SYSTEM_PROMPT_SECURITY,
+        ):
+            self.assertIn(review.FINDING_PROMOTION_RULE, base_prompt)
+
+    def test_threshold_names_the_merge_block_test_and_reasoning_destination(self):
+        """AC: the rule gives the judge a decision test (would a maintainer be
+        entitled to block the merge?) and says where non-blocking items go."""
+        text = review.FINDING_PROMOTION_RULE.lower()
+        self.assertIn("must change before merge", text)
+        self.assertIn("block the merge", text)
+        self.assertIn("reasoning", text)
+        self.assertIn("minor observations", text)
+        self.assertIn("downgrade", text)
+
+    def test_threshold_survives_judge_augmentation(self):
+        """AC: the augmentation appends to the prompt without displacing the
+        threshold — the augmented prompt is what actually reaches the LLM."""
+        for key in review.JUDGE_KEYS:
+            syntax_result = None
+            arch_context = ""
+            marker = ""
+            if key == "syntax_lint":
+                syntax_result, marker = (True, [], 1), "SYNTAX VERIFICATION"
+            elif key == "architecture":
+                arch_context, marker = "ADR-0002 body", "ARCHITECTURE CONTEXT"
+            prompt = review.augment_judge_prompt(
+                key, review.JUDGE_PROMPTS[key], syntax_result, arch_context
+            )
+            self.assertIn(review.FINDING_PROMOTION_RULE, prompt, key)
+            if marker:
+                self.assertIn(marker, prompt, key)
+
+    def test_verdict_stays_severity_blind(self):
+        """AC: the threshold is enforced by the prompt, not by downgrading
+        verdicts — a severity label never softens a finding (D-0023), so the
+        gate-level alternative is pinned as deliberately not taken."""
+        for severity in ("nit", "suggestion", "warning", "bug", "error", "security"):
+            content = (
+                "<reasoning>notes</reasoning>\n<findings>\n"
+                + json.dumps({"severity": severity, "message": "observation"})
+                + "\n</findings>\n"
+            )
+            raw = json.dumps({"choices": [{"message": {"content": content}}]})
+            verdict, reasoning, findings = review.evaluate_response(raw)
+            self.assertEqual(verdict, "Fail", severity)
+            self.assertEqual(reasoning, "notes", severity)
+            self.assertEqual(findings, [f"{severity}|observation"], severity)
+
+
 def _build_judges_data(
     statuses,
     findings=None,

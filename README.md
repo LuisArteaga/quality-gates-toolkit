@@ -472,6 +472,21 @@ Judges also read the **caller's** `docs/context.md` and `docs/adr/*.md` (if
 present) as architecture context — your documented decisions directly shape
 the architecture verdict.
 
+**Findings vs. observations** — a finding means "this must change before
+merge", because any non-PASS verdict is merge-blocking (see
+[Consuming verdicts](#consuming-verdicts)). The judge prompts state that
+threshold explicitly: an item is reported as a finding only if the diff
+shipped as-is would entitle a maintainer of the repository to block the merge
+over it. Everything else stays in the judge's reasoning, optionally under a
+`Minor observations` heading — a missing trailing newline at EOF, a
+whitespace or formatting wobble, a naming preference, an optional suggestion,
+or an observation the judge weighed and judged acceptable. `severity` is a
+descriptive label only: the verdict is severity-blind, so `[NIT]`-style
+reporting is a prompt contract, not a downgrade the gate performs (D-0023).
+Prompt changes are versioned artefacts — a consumer that snapshots the judge
+prompts verbatim must refresh that snapshot in the same release (see
+[Versioning](#versioning)).
+
 ### Review-run environment variables
 
 The workflows set these for you from the inputs above; when running
