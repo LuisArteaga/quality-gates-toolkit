@@ -5,8 +5,9 @@ name = "quality-gates-toolkit"
 # (local Python tool hooks, PR #29; importable judge package, D-0017/PR #30 —
 # v1.5.0 was never cut); 1.7.0 carries the per-language composites
 # (D-0020, PR #36); 1.8.0 carries the bounded judge completion cap
-# (D-0021, PR #53).
-version = "1.8.0"
+# (D-0021, PR #53); 1.8.1 carries the identity-less review fix
+# (D-0005, PR #55).
+version = "1.8.1"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"

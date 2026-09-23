@@ -10,6 +10,21 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.1] - 2026-09-23
+
+### Fixed
+
+- Identity-less (installation-token) judge runs now always submit a comment
+  review instead of the verdict-derived action. GitHub forbids the Actions
+  token from approving a pull request at all, so an all-PASS run previously
+  submitted `--approve`, was refused, and ended as a permanently red judge
+  job with the review — and with it the hidden verdict block — never posted;
+  the failing outcomes, by contrast, went through. `--approve` now requires
+  a user-identity token that is not the PR author, FAIL / NEEDS REVIEW keeps
+  exiting nonzero, so the check remains the merge gate. The README secrets
+  section and the `llm-pr-review.yml` design notes were corrected
+  accordingly, and D-0005 carries the amended contract (PR #55).
+
 ## [1.8.0] - 2026-09-23
 
 ### Added
@@ -151,7 +166,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.0...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.1...HEAD
+[1.8.1]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.4.0...v1.6.0
