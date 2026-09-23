@@ -10,6 +10,27 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.0] - 2026-09-23
+
+### Added
+
+- Bounded judge completions: `max_tokens` from `factory.json` is wired into
+  every OpenRouter request, with a toolkit default of 32768 applied when a
+  consumer config omits it. A degenerate generation can no longer burn a
+  model's whole output ceiling (observed: 131,072 tokens over ~23 min with
+  empty content, ~38% of a run's judge cost). The cap applies to the
+  fallback model too, and an empty response that reached the cap skips the
+  same-model nudge in favour of the fallback model (D-0021, PR #53).
+
+### Changed
+
+- The resolved judge config always carries a positive `max_tokens`
+  (documented in the README judge-configuration section and in
+  `config/factory.example.json`). This is the one intentional exception to
+  the flat-config "resolves byte-identically to v1.3.0" golden contract: a
+  config omitting the key resolves to the default instead of `None`
+  (D-0021).
+
 ## [1.7.0] - 2026-09-12
 
 ### Added
@@ -130,7 +151,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.7.0...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.4.0...v1.6.0
 [1.4.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.3.0...v1.4.0
