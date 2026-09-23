@@ -6,6 +6,8 @@ import io
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from email.message import Message
@@ -2155,6 +2157,258 @@ class ApiRetryPolicyTests(unittest.TestCase):
             review.append_step_summary(["| m | a | e | retry |"])
 
 
+class CallDeadlineTests(unittest.TestCase):
+    """Per-call wall-clock ceiling and the timeout re-route (issue #44, D-0022).
+
+    ``urlopen(timeout=...)`` bounds individual socket operations, not a slow
+    generation, so the ceiling is enforced around the transport call. A call
+    abandoned at the ceiling must be retried with the pinned route released
+    (pinned routing disables provider failover), logged distinctly, and
+    counted in the KPI record. Hung calls block on an ``Event`` rather than
+    ``time.sleep`` because these tests patch ``review.time.sleep``.
+    """
+
+    def _good_body(self) -> tuple[int, str]:
+        return 200, json.dumps(
+            {"choices": [{"message": {"content": "<reasoning>r</reasoning>"}}]}
+        )
+
+    def _usage_body(self) -> tuple[int, str]:
+        return 200, json.dumps(
+            {
+                "model": "test-model",
+                "provider": "together",
+                "choices": [
+                    {
+                        "message": {
+                            "content": "<reasoning>r</reasoning><findings></findings>"
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 34,
+                    "total_tokens": 46,
+                    "cost": 0.0012,
+                },
+            }
+        )
+
+    def _hung_transport(self, release: threading.Event):
+        """A transport call that outlives any sane ceiling until released."""
+
+        def _call(*args, **kwargs):
+            release.wait(5)
+            return self._good_body()
+
+        return _call
+
+    @staticmethod
+    def _sequence(*items):
+        """A ``side_effect`` that yields each item, calling it when callable.
+
+        An iterable ``side_effect`` returns its items verbatim, so a hung
+        transport has to be dispatched by a callable instead.
+        """
+        pending = list(items)
+
+        def _dispatch(*args, **kwargs):
+            item = pending.pop(0)
+            return item(*args, **kwargs) if callable(item) else item
+
+        return _dispatch
+
+    @patch("review.random.uniform", return_value=1.0)
+    @patch("review.time.sleep")
+    @patch("review.call_openrouter_api")
+    def test_call_over_the_ceiling_is_abandoned_and_retried_on_the_auto_route(
+        self, mock_call, mock_sleep, _mock_jitter
+    ):
+        """AC: an over-ceiling call is abandoned, re-routed to auto, and retried."""
+        release = threading.Event()
+        mock_call.side_effect = self._sequence(
+            self._hung_transport(release), self._good_body()
+        )
+
+        with patch.object(review, "CALL_TIMEOUT_SECONDS", 0.05):
+            started = time.monotonic()
+            body = review._call_with_api_retry(
+                "m", [{"role": "user", "content": "d"}], "key", ["Novita"], 0.0, None
+            )
+            elapsed = time.monotonic() - started
+        release.set()
+
+        self.assertIn("choices", body)
+        self.assertEqual(mock_call.call_count, 2)
+        # The pinned route is released on the retry, the model is not.
+        self.assertEqual(mock_call.call_args_list[0].kwargs["routing"], ["Novita"])
+        self.assertIsNone(mock_call.call_args_list[1].kwargs["routing"])
+        self.assertEqual(mock_call.call_args_list[1].args[0], "m")
+        # AC: bounded wall-clock — the abandoned call costs the ceiling, not
+        # the hung provider's full latency.
+        self.assertLess(elapsed, 1.0)
+
+    @patch("review.random.uniform", return_value=1.0)
+    @patch("review.time.sleep")
+    @patch("review.call_openrouter_api")
+    def test_timeout_logs_model_provider_elapsed_and_the_reroute(
+        self, mock_call, mock_sleep, _mock_jitter
+    ):
+        """AC: the abandoned call is logged distinctly, with its route named."""
+        release = threading.Event()
+        mock_call.side_effect = self._sequence(
+            self._hung_transport(release), self._good_body()
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = os.path.join(tmp, "step-summary.md")
+            captured = io.StringIO()
+            with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary}):
+                with patch.object(review, "CALL_TIMEOUT_SECONDS", 0.05):
+                    with contextlib.redirect_stdout(captured):
+                        review._call_with_api_retry(
+                            "m",
+                            [{"role": "user", "content": "d"}],
+                            "key",
+                            ["Novita"],
+                            0.0,
+                            None,
+                        )
+            summary_text = Path(summary).read_text()
+        release.set()
+
+        timeout_line = next(
+            line
+            for line in captured.getvalue().splitlines()
+            if "[OPENROUTER] timeout" in line
+        )
+        self.assertIn("model=m", timeout_line)
+        self.assertIn("provider=novita", timeout_line)
+        self.assertIn("after=", timeout_line)
+        self.assertIn("next_route=auto", timeout_line)
+        self.assertIn("retry in 5s on auto route", summary_text)
+
+    @patch("review.random.uniform", return_value=1.0)
+    @patch("review.time.sleep")
+    @patch("review.call_openrouter_api")
+    def test_abandoned_attempts_are_collected_for_the_kpi_record(
+        self, mock_call, mock_sleep, _mock_jitter
+    ):
+        """AC: each abandoned attempt appends its detail to the collector."""
+        release = threading.Event()
+        mock_call.side_effect = self._sequence(
+            self._hung_transport(release), self._good_body()
+        )
+        records: list[dict] = []
+
+        with patch.object(review, "CALL_TIMEOUT_SECONDS", 0.05):
+            review._call_with_api_retry(
+                "m",
+                [{"role": "user", "content": "d"}],
+                "key",
+                ["Novita"],
+                0.0,
+                None,
+                None,
+                records,
+            )
+        release.set()
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["model"], "m")
+        self.assertEqual(records[0]["provider"], "novita")
+        self.assertGreaterEqual(records[0]["after_seconds"], 0.05)
+
+    def test_timeout_is_classified_retryable(self):
+        """AC: a timeout joins the retryable class, with no server-sent wait."""
+        error = review.OpenRouterCallTimeout("m", 300.0, ["Novita"])
+        self.assertEqual(review.classify_api_error(error), (True, None))
+        self.assertIn("300s per-call ceiling", str(error))
+
+    def test_route_label_names_pinned_routes_and_auto(self):
+        """AC: the log field names the requested route, lowercased as sent."""
+        self.assertEqual(review.route_label(None), "auto")
+        self.assertEqual(review.route_label([]), "auto")
+        self.assertEqual(review.route_label(["Novita", "Z.AI"]), "novita+z.ai")
+
+    @patch("review.call_openrouter_api")
+    def test_transport_failure_is_reraised_on_the_calling_thread(self, mock_call):
+        """AC: the wrapper preserves transport exceptions for classification."""
+        mock_call.side_effect = urllib.error.URLError("connection refused")
+        with patch.object(review, "CALL_TIMEOUT_SECONDS", 5):
+            with self.assertRaises(urllib.error.URLError):
+                review._call_transport_with_deadline(
+                    "m", [{"role": "user", "content": "d"}], "key", None, 0.0, None
+                )
+
+    def test_call_llm_for_review_reports_the_timeout_count(self):
+        """AC: the abandoned attempt reaches the judge's KPI record and metadata."""
+        from telemetry import DummyTracer
+
+        release = threading.Event()
+        with (
+            patch("review.get_tracer", return_value=DummyTracer()),
+            patch("review.resolve_model_config") as mock_cfg,
+            patch("review.call_openrouter_api") as mock_call,
+            patch("review.time.sleep"),
+            patch("review.random.uniform", return_value=1.0),
+            patch.object(review, "CALL_TIMEOUT_SECONDS", 0.05),
+        ):
+            mock_cfg.return_value = {
+                "model": "primary-model",
+                "routing": ["Novita"],
+                "temperature": 0.0,
+                "options": None,
+                "fallback_model": None,
+                "max_tokens": 2048,
+            }
+            mock_call.side_effect = self._sequence(
+                self._hung_transport(release), self._usage_body()
+            )
+            _, metadata = review.call_llm_for_review(
+                "syntax_lint", "sys", "diff", "key"
+            )
+        release.set()
+
+        self.assertEqual(metadata["timeouts"], 1)
+        self.assertEqual(metadata["usage"]["timeouts"], 1)
+        self.assertEqual(metadata["usage"]["provider"], "together")
+
+    def test_multi_batch_path_stops_at_the_judge_wall_clock_budget(self):
+        """AC (issue #44 constraint): the ceiling bounds a call, so the judge
+        bounds the run — remaining batches are skipped, never silently PASS."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+        calls = [0]
+
+        def caller(judge_key, prompt, diff, api_key):
+            release.wait(0.3)
+            calls[0] += 1
+            return json.dumps(
+                {"choices": [{"message": {"content": "<reasoning>r</reasoning>"}}]}
+            ), {"used_fallback": False, "final_model": "m"}
+
+        with patch.dict(os.environ, {"REVIEW_BATCH_BUDGET_CHARS": "50"}):
+            diff = (
+                "diff --git a/a.py b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+                "diff --git a/b.py b/b.py\n@@ -1 +1 @@\n-x\n+y\n"
+            )
+            with patch.object(review, "API_RETRY_BUDGET_SECONDS", 0.05):
+                status, reasoning, findings, error, _, _ = review.run_judge(
+                    "syntax_lint",
+                    review.SYSTEM_PROMPT_SYNTAX_LINT,
+                    diff,
+                    "key",
+                    llm_caller=caller,
+                )
+
+        self.assertEqual(status, "NEEDS REVIEW")
+        self.assertEqual(calls[0], 1)
+        self.assertIn("not evaluated", error)
+        self.assertIn("not evaluated", reasoning)
+        self.assertEqual(findings, [])
+
+
 class UsageAccountingTests(unittest.TestCase):
     """KPI reporting for judge runs (ADR-0058): model/provider/tokens/cost."""
 
@@ -2301,6 +2555,7 @@ class UsageAccountingTests(unittest.TestCase):
             "reasoning_tokens": 77,
             "cost": 0.0045,
             "llm_calls": 1,
+            "timeouts": 2,
         }
         judges_data["syntax_lint"]["duration_seconds"] = 12.34
         judges_data["security"]["usage"] = {
@@ -2318,12 +2573,13 @@ class UsageAccountingTests(unittest.TestCase):
         table = "\n".join(rows)
         self.assertIn("### 📊 Judge Usage & KPIs", table)
         self.assertIn("| Judge | Model | Provider | Input Tokens |", table)
+        self.assertIn("| LLM Calls | Timeouts | Duration |", table)
         self.assertIn("| syntax_lint (`syntax_lint`) | z-ai/glm-5.3-flash |", table)
-        self.assertIn("| 1,234 | 432 | 77 | $0.004500 | 1 | 12.3s |", table)
+        self.assertIn("| 1,234 | 432 | 77 | $0.004500 | 1 | 2 | 12.3s |", table)
         self.assertIn("| moonshotai/kimi-k3 | Together |", table)
-        self.assertIn("| 100 | 50 | 5 | $0.002000 | 2 | 8.0s |", table)
+        self.assertIn("| 100 | 50 | 5 | $0.002000 | 2 | n/a | 8.0s |", table)
         self.assertIn("| **Total** | z-ai/glm-5.3-flash, moonshotai/kimi-k3 |", table)
-        self.assertIn("| 1,334 | 482 | 82 | $0.006500 | 3 | 20.3s |", table)
+        self.assertIn("| 1,334 | 482 | 82 | $0.006500 | 3 | 2 | 20.3s |", table)
 
     def test_render_kpi_table_renders_na_without_usage(self):
         """AC: legacy judges_data shape renders n/a cells instead of crashing."""
