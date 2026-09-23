@@ -10,6 +10,30 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.3] - 2026-09-23
+
+### Changed
+
+- Judge prompts state a **finding promotion threshold**: an item is reported
+  as a finding only if it must change before merge — if the diff shipped
+  as-is, a maintainer of the repository would be entitled to block the merge
+  over it. Every other observation (a missing trailing newline at EOF, a
+  whitespace or formatting wobble, a naming preference, an optional
+  suggestion, or an observation the judge weighed and judged acceptable)
+  stays in the judge's reasoning, optionally under a `Minor observations`
+  heading. Previously a judge's only options were "say nothing" or "block the
+  merge", so a cosmetic note failed an otherwise sound PR (observed: a single
+  `[NIT] … is missing a trailing newline at EOF` as the sole finding of an
+  architecture FAIL, costing a fix commit and a full CI cycle on one byte).
+  The threshold is not a licence to downgrade real violations — a genuine
+  criterion failure is always a finding — and the verdict stays
+  **severity-blind**, so the verdict-block contract and the merge gate are
+  unchanged (D-0023, PR #59).
+- Judge prompts are versioned artefacts: a consumer that snapshots them
+  verbatim (instead of importing
+  `quality_gates_toolkit.review.JUDGE_PROMPTS`) must refresh that snapshot in
+  the same release.
+
 ## [1.8.2] - 2026-09-23
 
 ### Added
@@ -190,7 +214,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.2...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.3...HEAD
+[1.8.3]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.7.0...v1.8.0
