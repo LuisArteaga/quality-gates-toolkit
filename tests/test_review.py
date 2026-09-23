@@ -477,6 +477,26 @@ class ProviderPayloadTests(unittest.TestCase):
         payload = review.build_payload("m", [], None, 0.0, None)
         self.assertNotIn("provider", payload)
 
+    def test_build_payload_includes_configured_max_tokens(self):
+        """AC (issue #38): a configured completion cap reaches the payload."""
+        payload = review.build_payload(
+            "m", [{"role": "user", "content": "d"}], None, 0.0, None, 1024
+        )
+        self.assertEqual(payload["max_tokens"], 1024)
+
+    def test_build_payload_omits_max_tokens_when_unset(self):
+        """AC: no cap resolved -> the key is absent, provider default applies."""
+        payload = review.build_payload("m", [], None, 0.0, None)
+        self.assertNotIn("max_tokens", payload)
+
+    def test_build_payload_options_still_merge_last(self):
+        """AC: the options escape hatch keeps its last-wins semantics."""
+        payload = review.build_payload(
+            "m", [], None, 0.0, {"thinking": "max", "max_tokens": 99}, 1024
+        )
+        self.assertEqual(payload["thinking"], "max")
+        self.assertEqual(payload["max_tokens"], 99)
+
 
 class RunJudgeTests(unittest.TestCase):
     def _build_llm_response(self, content: str) -> str:
@@ -799,6 +819,50 @@ class CallLlmForReviewTests(unittest.TestCase):
         self.assertEqual(metadata["final_model"], "primary-model")
         self.assertEqual(metadata["attempt_count"], 1)
         self.assertEqual(mock_retry.call_count, 1)
+
+    def _request_payload_for_factory(self, factory: dict) -> dict:
+        """Run one judge call end-to-end from a real config file and return
+        the JSON payload actually sent to OpenRouter (issue #38: the config
+        file is the only input, so a resolved-then-dropped field is caught).
+        """
+        from telemetry import DummyTracer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "factory.json"
+            path.write_text(json.dumps(factory), encoding="utf-8")
+            response = MagicMock()
+            response.status = 200
+            response.read.return_value = self._build_response(
+                "<reasoning>r</reasoning><findings></findings>"
+            ).encode()
+            context = MagicMock()
+            context.__enter__.return_value = response
+            context.__exit__.return_value = False
+            env = {
+                "REVIEW_CONFIG_PATH": str(path),
+                "AGENT_MODEL": "",
+                "SYNTAX_LINT_MODEL": "",
+            }
+            with patch("review.get_tracer", return_value=DummyTracer()):
+                with patch.dict(os.environ, env):
+                    with patch("urllib.request.urlopen", return_value=context) as call:
+                        review.call_llm_for_review("syntax_lint", "sys", "diff", "key")
+        return json.loads(call.call_args.args[0].data)
+
+    def test_omitted_max_tokens_sends_the_toolkit_default_in_the_payload(self):
+        """AC (issue #38): a config without max_tokens is still bounded."""
+        payload = self._request_payload_for_factory(
+            {"syntax_lint": {"model": "vendor/primary-model"}}
+        )
+        self.assertEqual(payload["model"], "vendor/primary-model")
+        self.assertEqual(payload["max_tokens"], 32768)
+
+    def test_configured_max_tokens_sends_the_consumer_value_in_the_payload(self):
+        """AC (issue #38): a configured cap wins over the toolkit default."""
+        payload = self._request_payload_for_factory(
+            {"syntax_lint": {"model": "vendor/primary-model", "max_tokens": 1024}}
+        )
+        self.assertEqual(payload["max_tokens"], 1024)
 
     @patch("review._call_with_api_retry")
     @patch("review.resolve_model_config")
@@ -1295,6 +1359,140 @@ class LayeredRetryPolicyTests(unittest.TestCase):
         # Fallback reuses the ORIGINAL messages, not the nudged ones.
         self.assertEqual(third.args[1][1]["content"], "diff")
 
+    def _response_with_completion_tokens(self, content: str, completion: int) -> str:
+        return json.dumps(
+            {
+                "choices": [{"message": {"content": content}}],
+                "usage": {"completion_tokens": completion},
+            }
+        )
+
+    @patch("review._call_with_api_retry")
+    def test_cap_saturated_empty_goes_straight_to_the_fallback(self, mock_retry):
+        """AC (issue #38): empty content at the cap skips the same-model nudge."""
+        saturated = self._response_with_completion_tokens("", 32768)
+        good = self._build_response("<reasoning>r</reasoning><findings></findings>")
+        mock_retry.side_effect = [saturated, good]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "syntax_lint",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+            32768,
+        )
+        self.assertEqual(body, good)
+        self.assertTrue(used_fb)
+        self.assertEqual(final_m, "fallback")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(mock_retry.call_count, 2)
+        # The second call is the FALLBACK model on the ORIGINAL prompt, not a
+        # primary-model nudge with EMPTY_CONTENT_INSTRUCTION appended.
+        second = mock_retry.call_args_list[1]
+        self.assertEqual(second.args[0], "fallback")
+        self.assertEqual(second.args[1][1]["content"], "diff")
+
+    @patch("review._call_with_api_retry")
+    def test_cap_saturated_empty_without_fallback_returns_empty_body(self, mock_retry):
+        """AC: with no fallback the saturated empty body is returned as-is."""
+        mock_retry.return_value = self._response_with_completion_tokens("", 32768)
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "syntax_lint",
+            "primary",
+            self._messages(),
+            None,
+            "key",
+            ["Together"],
+            0.0,
+            None,
+            32768,
+        )
+        self.assertEqual(body, mock_retry.return_value)
+        self.assertFalse(used_fb)
+        self.assertEqual(final_m, "primary")
+        self.assertEqual(attempts, 1)
+        self.assertEqual(mock_retry.call_count, 1)
+
+    @patch("review._call_with_api_retry")
+    def test_empty_content_below_the_cap_still_nudges(self, mock_retry):
+        """AC: a non-saturated empty response keeps the existing nudge path."""
+        empty = self._response_with_completion_tokens("", 12000)
+        good = self._build_response("<reasoning>r</reasoning><findings></findings>")
+        mock_retry.side_effect = [empty, good]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "syntax_lint",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+            32768,
+        )
+        self.assertEqual(body, good)
+        self.assertFalse(used_fb)
+        self.assertEqual(final_m, "primary")
+        self.assertEqual(attempts, 2)
+        nudge_messages = mock_retry.call_args_list[1].args[1]
+        self.assertEqual(
+            nudge_messages[1]["content"], "diff" + review.EMPTY_CONTENT_INSTRUCTION
+        )
+
+    @patch("review._call_with_api_retry")
+    def test_capped_but_non_empty_response_is_not_a_saturation(self, mock_retry):
+        """AC: a truncated verdict with tags still evaluates normally."""
+        truncated = self._response_with_completion_tokens(
+            "<reasoning>r</reasoning><findings></findings>", 32768
+        )
+        mock_retry.return_value = truncated
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "syntax_lint",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+            32768,
+        )
+        self.assertEqual(body, truncated)
+        self.assertFalse(used_fb)
+        self.assertEqual(attempts, 1)
+        self.assertEqual(mock_retry.call_count, 1)
+
+    @patch("review._call_with_api_retry")
+    def test_max_tokens_persists_on_every_attempt(self, mock_retry):
+        """AC (issue #38): the cap bounds the primary, nudge, AND fallback calls."""
+        empty = self._build_response("")
+        good = self._build_response("<reasoning>r</reasoning><findings></findings>")
+        mock_retry.side_effect = [empty, empty, good]
+
+        _, used_fb, final_m, _ = review._run_layered_retry(
+            "security",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            {"thinking": "max"},
+            4096,
+        )
+        self.assertTrue(used_fb)
+        self.assertEqual(final_m, "fallback")
+        self.assertEqual(
+            [call.args[6] for call in mock_retry.call_args_list], [4096, 4096, 4096]
+        )
+
     @patch("review._call_with_api_retry")
     def test_no_fallback_model_exhausts_at_two(self, mock_retry):
         """AC: no fallback_model -> 2 attempts, returns empty, no fallback."""
@@ -1596,6 +1794,39 @@ class ApiRetryPolicyTests(unittest.TestCase):
             hdrs=hdrs,
             fp=None,
         )
+
+    def test_transport_serializes_max_tokens_into_the_request_body(self):
+        """AC (issue #38): the completion cap reaches the HTTP request JSON."""
+        response = MagicMock()
+        response.status = 200
+        response.read.return_value = b'{"choices": []}'
+        context = MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = False
+        with patch("urllib.request.urlopen", return_value=context) as mock_urlopen:
+            review.call_openrouter_api(
+                "m", [{"role": "user", "content": "d"}], "key", None, 0.0, None, 32768
+            )
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(json.loads(request.data)["max_tokens"], 32768)
+
+    @patch("review.call_openrouter_api")
+    def test_api_retry_forwards_max_tokens_to_the_transport(self, mock_call):
+        """AC: the retry wrapper passes the resolved cap down unchanged."""
+        mock_call.return_value = self._good_body()
+        review._call_with_api_retry(
+            "m", [{"role": "user", "content": "d"}], "key", None, 0.0, None, 2048
+        )
+        self.assertEqual(mock_call.call_args.kwargs["max_tokens"], 2048)
+
+    @patch("review.call_openrouter_api")
+    def test_api_retry_omits_max_tokens_when_none(self, mock_call):
+        """AC: an unresolved cap stays absent rather than sent as null."""
+        mock_call.return_value = self._good_body()
+        review._call_with_api_retry(
+            "m", [{"role": "user", "content": "d"}], "key", None, 0.0, None
+        )
+        self.assertIsNone(mock_call.call_args.kwargs["max_tokens"])
 
     @patch("review.random.uniform", return_value=1.0)
     @patch("review.time.sleep")

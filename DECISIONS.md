@@ -772,3 +772,103 @@ None.
   for skipped composite jobs; the language composites' llmreview
   permission shape follows the same caller contract.
 
+## D-0021 — Judge requests carry a bounded completion cap
+
+- Date: 2026-09-23
+- Status: Accepted
+
+### Decision
+
+Every judge request sent to OpenRouter carries `max_tokens`:
+
+1. **Wiring.** The resolved `max_tokens` travels the whole call chain
+   (`resolve_model_config` → `call_llm_for_review` → `_run_layered_retry` →
+   `_call_with_api_retry` → `call_openrouter_api` → `build_payload`) and is
+   serialized into the request payload. It is placed in the payload before
+   the `options` merge, which stays last-wins — the documented escape hatch
+   keeps its existing semantics.
+2. **Default at the resolution boundary.** `resolve_model_config` applies
+   `DEFAULT_MAX_TOKENS = 32768` when the consumer config omits `max_tokens`,
+   so every resolved config carries a positive integer. The effective value
+   is part of the `[INFO] Resolved judge config` log line. This is the
+   single boundary: the transport stays a pure builder that omits the key
+   when no cap was resolved.
+3. **Validation.** A configured value must be a positive integer; `0`,
+   negatives, floats, strings, and booleans warn and fall back to the
+   default. A malformed config value can never remove the bound.
+4. **Fallback persistence.** The cap persists on the fallback attempt.
+   ADR-0021-lineage resets (`routing=None`, `options=None`,
+   `temperature=0.0`) are model/route-selection concerns; `max_tokens` is a
+   request-level latency/cost bound, so it applies regardless of which
+   model serves the call — and the fallback model may have a larger
+   ceiling.
+5. **Cap-saturated empty responses skip the same-model nudge.** When the
+   response content is empty AND the reported `completion_tokens` reached
+   the cap, the ladder goes straight to the fallback model (when one is
+   configured) instead of re-prompting the same model on the same route.
+   Without a fallback, the empty body is returned unchanged and maps to
+   `NEEDS REVIEW` as before. A capped-but-NON-empty response is not a
+   saturation: a truncated verdict that still carries
+   `<reasoning>`/`<findings>` evaluates normally, so truncation never
+   silently corrupts a verdict.
+
+### Rationale
+
+A judge emits a structured verdict (`<reasoning>` + `<findings>`); 131,072
+completion tokens is never legitimate work. On
+LuisArteaga/speakdatawith.com PR #55 (Quality Gates run 35002979361) the
+`syntax_lint` attempt 1 produced exactly that: the model's maximum output
+over 1401.8 s, empty content, $0.0465 (~38% of the run's judge cost), and
+the empty-content nudge then succeeded in 64.5 s on retry. Nothing in the
+request bounded the generation: `max_tokens` was parsed by
+`resolve_model_config` but never sent, so the provider's own default
+applied — and `urlopen(timeout=300)` bounds individual socket operations,
+not one generation, while `REVIEW_RETRY_BUDGET_SECONDS` governs retry waits
+rather than a single call.
+
+32768 is chosen from evidence, not taste: observed judge completions
+(reasoning tokens included, since they count against the cap) on a
+~2.2k-line diff ran 0.8k–12.2k tokens, so the default keeps ~2.5x headroom
+for the largest legitimate verdict while bounding a runaway generation to
+minutes instead of tens of minutes. Making the value a config knob keeps
+the decision with the consumer whose diffs are unusually large.
+
+Applying the default at the resolution boundary has one visible cost: the
+flat-config golden contract ("resolves byte-identically to v1.3.0") gains
+a single intentional exception, since a config omitting `max_tokens` now
+resolves to 32768 rather than `None`. That is the point of the decision —
+`None` meant "unbounded", which is the defect — and the golden test pins
+the new value instead of hiding it.
+
+The `>=` comparison (rather than the AC's "==") is deliberate: OpenRouter
+reports `completion_tokens` that can slightly exceed the requested
+`max_tokens` (their own example: `max_tokens: 300` → `completion_tokens:
+302`), so an equality test would miss the pathology at the boundary.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- [OpenRouter API parameters — Max Tokens](https://openrouter.ai/docs/api_reference/parameters)
+  — "upper limit for the number of tokens the model can generate in
+  response"; also that an absent sampling parameter is omitted upstream
+  rather than replaced by a hardcoded value, so the unbounded request ran
+  on the provider default.
+- [OpenRouter — Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+  — `max_tokens` covers reasoning and visible output together; a limit
+  consumed by reasoning returns `finish_reason: "length"` with empty
+  `content` (the exact pathology this decision detects), and the worked
+  example `max_tokens: 300` → `completion_tokens: 302` motivating the
+  `>=` test. Also documents the hard upper bound (context length minus
+  prompt length) and that Anthropic models require `max_tokens` to be
+  strictly above the reasoning budget.
+- Issue #38 and its evidence (speakdatawith.com PR #55 review KPIs,
+  Quality Gates run 35002979361) — the runaway call, its cost share, and
+  the successful nudge retry.
+- [community.openai.com — `max_tokens` semantics](https://community.openai.com/t/why-was-max-tokens-changed-to-max-completion-tokens/938077)
+  — the `max_tokens` vs `max_reasoning_tokens` split in the wider
+  ecosystem; rationale for bounding the request rather than the reasoning
+  budget (a per-model reasoning knob cannot bound untagged models).
+

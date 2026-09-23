@@ -238,12 +238,18 @@ def build_openrouter_provider(routing):
     return None
 
 
-def build_payload(model, messages, routing, temperature, options):
+def build_payload(model, messages, routing, temperature, options, max_tokens=None):
     """Build the OpenRouter chat completions request payload dict.
 
     Usage accounting (``usage.include``) is requested on every call so
     each response carries its ``cost`` alongside the token counts; the
     KPI reporting (review body, step summary, spans) is built from it.
+
+    ``max_tokens`` bounds the completion when set (D-0021); the key is
+    omitted for ``None`` so a caller without a resolved config keeps the
+    provider's own default. It is placed before the ``options`` merge,
+    which stays last-wins exactly as before — ``options`` is the
+    documented escape hatch and may override any top-level payload key.
     """
     payload_dict: dict[str, Any] = {
         "model": model,
@@ -251,6 +257,8 @@ def build_payload(model, messages, routing, temperature, options):
         "temperature": temperature if temperature is not None else 0.0,
         "usage": {"include": True},
     }
+    if max_tokens is not None:
+        payload_dict["max_tokens"] = max_tokens
     provider = build_openrouter_provider(routing)
     if provider:
         payload_dict["provider"] = provider
@@ -357,12 +365,20 @@ def merge_usages(records: Sequence[dict[str, Any] | None]) -> dict[str, Any]:
 
 
 def call_openrouter_api(
-    model, messages, api_key, routing=None, temperature=0.0, options=None
+    model,
+    messages,
+    api_key,
+    routing=None,
+    temperature=0.0,
+    options=None,
+    max_tokens=None,
 ):
     """Performs HTTP request to OpenRouter chat completions API."""
     url = "https://openrouter.ai/api/v1/chat/completions"
 
-    payload_dict = build_payload(model, messages, routing, temperature, options)
+    payload_dict = build_payload(
+        model, messages, routing, temperature, options, max_tokens
+    )
     payload = json.dumps(payload_dict)
     data = payload.encode("utf-8")
     req = urllib.request.Request(
@@ -419,7 +435,9 @@ def _read_error_body(http_error: urllib.error.HTTPError) -> str:
         return ""
 
 
-def _call_with_api_retry(model, messages, api_key, routing, temperature, options):
+def _call_with_api_retry(
+    model, messages, api_key, routing, temperature, options, max_tokens=None
+):
     """Single OpenRouter call with a 429-aware API-error retry policy.
 
     Retryable failures (HTTP 429/408/5xx, timeouts, connection errors,
@@ -429,6 +447,10 @@ def _call_with_api_retry(model, messages, api_key, routing, temperature, options
     (``REVIEW_RETRY_BUDGET_SECONDS``, default 45 min). A server-sent
     ``Retry-After`` header overrides the scheduled delay. Non-retryable
     HTTP 4xx errors (bad request, auth, unknown model) fail fast.
+
+    ``max_tokens`` (D-0021) bounds every attempt's completion; ``None``
+    omits the key. The retry policy itself is unchanged — a bounded call
+    that still fails is retried exactly like before.
 
     Returns the raw response body string on success.
     Raises Exception on API-level failure after the budget is exhausted.
@@ -443,6 +465,7 @@ def _call_with_api_retry(model, messages, api_key, routing, temperature, options
             log(
                 f"[DEBUG] OpenRouter request model={model} attempt={attempt} "
                 f"routing={routing} temperature={temperature} "
+                f"max_tokens={max_tokens} "
                 f"messages={[message_size(m) for m in messages]}"
             )
         try:
@@ -453,6 +476,7 @@ def _call_with_api_retry(model, messages, api_key, routing, temperature, options
                 routing=routing,
                 temperature=temperature,
                 options=options,
+                max_tokens=max_tokens,
             )
             parsed_body = json.loads(body, strict=False)
             if "error" in parsed_body:
@@ -691,11 +715,36 @@ def _is_empty_content(raw_response: str) -> bool:
     return not content or not content.strip()
 
 
+def _is_cap_saturated(raw_response: str, max_tokens: int | None) -> bool:
+    """Whether the response exhausted its completion-token cap.
+
+    True only when ``max_tokens`` is a positive integer and the response's
+    reported ``completion_tokens`` reached it. Defensive: a response whose
+    usage block is missing or unparseable is never saturated. A capped yet
+    NON-empty response is not saturated either — a truncated verdict that
+    still carries ``<reasoning>``/``<findings>`` evaluates normally (D-0021).
+    """
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
+        return False
+    if max_tokens <= 0:
+        return False
+    completion_tokens = _as_number(extract_usage(raw_response).get("completion_tokens"))
+    return completion_tokens is not None and completion_tokens >= max_tokens
+
+
 def _run_layered_retry(
-    judge_key, model, messages, fallback_model, api_key, routing, temperature, options
+    judge_key,
+    model,
+    messages,
+    fallback_model,
+    api_key,
+    routing,
+    temperature,
+    options,
+    max_tokens=None,
 ):
     """Execute the layered API-error + empty-content retry/fallback policy
-    (ADR-0021, amended 2026-08-31).
+    (ADR-0021, amended 2026-08-31; completion cap added by D-0021).
 
     Wraps the single-call transport (``_call_with_api_retry``) with the
     API-error fallback trigger and the empty-content quality check, kept
@@ -707,11 +756,16 @@ def _run_layered_retry(
     Retry progression (each attempt already carries its own budgeted
     API-error retry with escalating waits inside ``_call_with_api_retry``):
         1. Primary model, original prompt.
-        2. Primary model, explicit-instruction nudge - only if (1) is empty.
+        2. Primary model, explicit-instruction nudge - only if (1) is empty
+           AND the completion cap was NOT reached. A cap-saturating empty
+           response is the degenerate generation itself, so re-asking the
+           same route is predicted to repeat it; (2) is skipped and the
+           ladder goes straight to (3).
         3. Fallback model, original prompt, routing=None, options=None,
-           temperature=0.0 - fired when the primary exhausted its API-error
-           retries (429/5xx/timeouts, from (1) or (2)) OR when (2) is empty
-           AND a fallback_model is set.
+           temperature=0.0, ``max_tokens`` unchanged - fired when the primary
+           exhausted its API-error retries (429/5xx/timeouts, from (1) or
+           (2)), when (1) saturated the cap with empty content, or when (2)
+           is empty AND a fallback_model is set.
         4. Give up: an empty body is returned and mapped to ``NEEDS REVIEW``
            by ``evaluate_response``; an API-error exhausted on the fallback
            model too propagates to ``run_judge`` (also NEEDS REVIEW).
@@ -724,6 +778,10 @@ def _run_layered_retry(
             appended to the last (user) turn.
         fallback_model: optional fallback model id (may be ``None``).
         api_key, routing, temperature, options: forwarded to the transport.
+        max_tokens: positive completion bound applied to every attempt
+            (D-0021). It persists on the fallback path because it bounds
+            latency and cost regardless of which model serves the request;
+            ``None`` leaves the provider's own default in place.
 
     Returns:
         ``(response_body, used_fallback, final_model, attempt_count)``.
@@ -731,16 +789,21 @@ def _run_layered_retry(
 
     def _run_fallback(count):
         """Fallback attempt on the original prompt (ADR-0021: routing=None,
-        options=None, temperature=0.0). Returns ``(body, attempt_count)``."""
+        options=None, temperature=0.0). ``max_tokens`` persists — it is a
+        request-level latency/cost bound (D-0021), not routing or quality
+        policy, and the fallback model may have a larger ceiling.
+        Returns ``(body, attempt_count)``."""
         log(f"[INFO] Judge {judge_key} fell back to model {fallback_model}")
         return (
-            _call_with_api_retry(fallback_model, messages, api_key, None, 0.0, None),
+            _call_with_api_retry(
+                fallback_model, messages, api_key, None, 0.0, None, max_tokens
+            ),
             count,
         )
 
     try:
         response_body = _call_with_api_retry(
-            model, messages, api_key, routing, temperature, options
+            model, messages, api_key, routing, temperature, options, max_tokens
         )
     except Exception as exc:
         # API-error exhaustion: the transport is unusable, so the
@@ -753,6 +816,21 @@ def _run_layered_retry(
 
     attempt_count = 1
     if _is_empty_content(response_body):
+        if _is_cap_saturated(response_body, max_tokens):
+            # The degenerate generation IS the cap-saturating empty response
+            # (D-0021): re-asking the same model on the same route is
+            # predicted to repeat it, so skip the nudge and go to the
+            # fallback model. Without a fallback the empty body flows into
+            # evaluate_response unchanged (NEEDS REVIEW).
+            log(
+                f"[WARN] Judge {judge_key}: empty content with the completion "
+                f"cap ({max_tokens}) reached; skipping the same-model nudge"
+            )
+            if fallback_model:
+                response_body, attempt_count = _run_fallback(2)
+                return response_body, True, fallback_model, attempt_count
+            return response_body, False, model, attempt_count
+
         log(
             f"[WARN] Judge {judge_key}: empty content from primary model, "
             f"retrying with explicit instruction"
@@ -764,7 +842,13 @@ def _run_layered_retry(
         nudge_messages[-1]["content"] += EMPTY_CONTENT_INSTRUCTION
         try:
             response_body = _call_with_api_retry(
-                model, nudge_messages, api_key, routing, temperature, options
+                model,
+                nudge_messages,
+                api_key,
+                routing,
+                temperature,
+                options,
+                max_tokens,
             )
         except Exception as exc:
             if not fallback_model:
@@ -812,6 +896,7 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
     routing = cfg["routing"]
     temperature = cfg["temperature"]
     options = cfg["options"]
+    max_tokens = cfg.get("max_tokens")
     fallback_model = cfg.get("fallback_model")
 
     messages = [
@@ -835,6 +920,7 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
             routing,
             temperature,
             options,
+            max_tokens,
         )
 
         usage = extract_usage(response_body)
