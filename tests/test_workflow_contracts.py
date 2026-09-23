@@ -14,10 +14,9 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   not block the cost gate) and only on pull_request events (D-0011).
 - D-0004 neutral defaults: no origin-repository fossils in the public API;
   coverage-floor is a REQUIRED policy input.
-- D-0005 secrets contract: explicit forwarding only (no blanket secret
-  propagation shortcuts)
-  anywhere), optional judge-token with github.token fallback, fail-fast
-  OpenRouter validation.
+- D-0005 secrets contract: explicit forwarding only — no blanket secret
+  propagation (`secrets: inherit`) anywhere; optional judge-token with
+  github.token fallback, fail-fast OpenRouter validation.
 - D-0007 tagged execution: third-party actions SHA-pinned; coverage.json
   handed from test.yml to diff-coverage.yml as an artifact.
 - D-0012 JS gates: the harness owns the environment, the project owns the
