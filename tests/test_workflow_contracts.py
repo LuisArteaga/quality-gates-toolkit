@@ -129,7 +129,7 @@ def test_composite_ships_neutral_public_defaults():
     assert inputs["lint-paths"]["default"] == "."
     assert inputs["cov-paths"]["default"] == "."
     assert inputs["extra-pip-packages"]["default"] == "none"
-    assert inputs["toolkit-ref"]["default"] == "v1.8.3"
+    assert inputs["toolkit-ref"]["default"] == "v1.8.4"
     assert inputs["config-path"]["default"] == "config/factory.json"
     assert inputs["node-version"]["default"] == "22"
 
@@ -213,7 +213,7 @@ def test_every_toolkit_ref_input_defaults_to_the_release_tag():
         inputs = inputs.get("inputs") or {}
         if "toolkit-ref" not in inputs:
             continue
-        assert inputs["toolkit-ref"].get("default") == "v1.8.3", (
+        assert inputs["toolkit-ref"].get("default") == "v1.8.4", (
             f"{path.name}: toolkit-ref must default to the concrete release tag"
         )
 
@@ -860,7 +860,7 @@ def test_pyproject_is_installable_and_exposes_secret_scan_script():
     # The version field tracks the release train (annotated tags vX.Y.Z):
     # bump it together with the toolkit-ref pin sites in the release PR.
     # Mirrors the hardcoded-tag discipline of the toolkit-ref contract test.
-    assert data["project"]["version"] == "1.8.3"
+    assert data["project"]["version"] == "1.8.4"
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +894,7 @@ def test_security_gate_takes_the_wrapper_ref_as_an_input():
     """The wrapper ships with the toolkit, so security.yml needs the same
     toolkit-ref contract as the other toolkit-executing micro-workflows."""
     inputs = _call_inputs(_load("security.yml"))
-    assert inputs["toolkit-ref"]["default"] == "v1.8.3"
+    assert inputs["toolkit-ref"]["default"] == "v1.8.4"
 
 
 def test_composites_forward_toolkit_ref_to_the_security_gate():
