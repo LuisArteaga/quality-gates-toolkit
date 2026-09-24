@@ -34,6 +34,13 @@ name: CI
 # toolkit's own policy values:
 # coverage-floor 80, tree-sitter prefetch on (enrichment tests parse code),
 # LLM review on for trusted PRs with the trusted default inputs.
+#
+# The judges run WITHOUT a judge PAT on purpose: `judge-token` is not
+# forwarded, so this repo's own PRs dogfood the default contract (D-0005) —
+# the review is posted by github-actions[bot] as a COMMENT review carrying
+# the identical body (verdict block, per-judge reasoning, KPI table), and
+# the check's exit code, not the review state, is the merge gate. The only
+# secret this workflow needs is OPENROUTER_API_KEY.
 
 on:
   pull_request:
@@ -105,5 +112,9 @@ jobs:
       # "no tests" for production files whose tests landed in another batch.
       batch-budget-chars: "500000"
     secrets:
+      # No judge-token: the tokenless path (github.token → github-actions[bot]
+      # comment review) is the documented default contract (D-0005) and is
+      # dogfooded here on every PR. A PAT would only buy a verdict-driven
+      # review state for a non-author identity — unreachable for this repo,
+      # whose PR author owns any PAT it could use.
       openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
-      judge-token: ${{ secrets.JUDGE_GH_TOKEN }}

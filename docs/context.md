@@ -12,6 +12,9 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
 
 - `review.py` drives the LLM judges (OpenRouter) over a PR diff and posts
   one combined GitHub review carrying the versioned hidden verdict block.
+  Posting needs no consumer PAT: without `judge-token` the review is a
+  comment review by `github-actions[bot]` with the identical body, and the
+  check's exit code is the merge gate (D-0005).
   When that submission is refused, the body is persisted, dumped to the job
   log and uploaded as a failure-path artifact instead of being discarded
   (D-0024).

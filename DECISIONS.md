@@ -141,6 +141,18 @@ their integration docs, not in the generic workflow contract.
   rejection — they are different rules with different scopes. The
   exit-code gate (any FAIL / NEEDS REVIEW ⇒ exit 1) is unchanged and
   remains the merge gate.
+- 2026-09-24: The identity-less submission is the **documented default**,
+  not a degraded fallback: one secret (`OPENROUTER_API_KEY`) buys a complete
+  judge review — comment review state, unchanged verdict block, unchanged
+  exit-code gate — so no consumer needs a GitHub PAT. `judge-token` survives
+  only for consumer-side integration models that require a non-bot review
+  identity (verdict-driven review state, trusted-identity automerge); its
+  scope requirements are unchanged. This repository's own CI dogfoods the
+  tokenless path: `ci.yml` forwards `openrouter-api-key` only, so every
+  toolkit PR exercises the contract the docs promise. The published
+  docs (README *Secrets*, the `judge-token` input description) state the
+  same, and the contract suite pins the dogfood so a stray
+  `JUDGE_GH_TOKEN` forward cannot reappear unnoticed.
 
 ## D-0006 — Hybrid workflow architecture
 
