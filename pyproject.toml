@@ -11,7 +11,9 @@ name = "quality-gates-toolkit"
 # promotion threshold (D-0023, PR #59); 1.8.4 carries the persisted
 # undelivered review body (D-0024, PR #61) and the Semgrep ruleset-fetch
 # retry shared by the hook and security.yml (D-0025, PR #63).
-version = "1.8.4"
+# 1.8.5 carries the tokenless review contract: no PAT needed, and the
+# review authenticates with GH_TOKEN only (D-0005, PR #66).
+version = "1.8.5"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
