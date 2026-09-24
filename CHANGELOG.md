@@ -10,6 +10,28 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.5] - 2026-09-24
+
+### Changed
+
+- The judge review needs **no GitHub PAT**: the README's *Secrets* section now
+  leads with "only `OPENROUTER_API_KEY` is ever needed", the `JUDGE_GH_TOKEN`
+  subsection is retitled as optional (the tokenless path is the default), and
+  the `judge-token` input description states the same. The toolkit's own
+  `ci.yml` stopped forwarding `judge-token`, so every toolkit PR dogfoods the
+  tokenless path — the review is posted by `github-actions[bot]` as a comment
+  review carrying the identical body (verdict block, per-judge reasoning, KPI
+  table), and the check's exit code remains the merge gate. A contract test
+  pins the dogfood so a stray PAT forward cannot reappear unnoticed
+  (D-0005, PR #66).
+- The review authenticates with `GH_TOKEN` **only**. `review.py::main()` no
+  longer reads the origin project's legacy `GH_PAT`, which took precedence
+  over `GH_TOKEN` — a second, undocumented variable that made the effective
+  token invisible in the run's log. A set `GH_PAT` is now logged as ignored
+  instead of silently winning; the missing-token path stays fail-fast, and
+  `GH_TOKEN` is documented as a review-run environment variable
+  (D-0005, PR #66).
+
 ## [1.8.4] - 2026-09-23
 
 ### Added
@@ -253,7 +275,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.4...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.5...HEAD
+[1.8.5]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.1...v1.8.2
