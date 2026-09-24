@@ -2160,14 +2160,22 @@ def main():
         sys.stderr.write("[ERR] PR_NUMBER not set\n")
         sys.exit(1)
 
-    gh_pat = os.getenv("GH_PAT", "")
+    if os.getenv("GH_PAT"):
+        # Legacy variable of the origin project, where it took precedence
+        # over GH_TOKEN. No supported caller sets it (every workflow exports
+        # GH_TOKEN only), and honouring a second, undocumented variable makes
+        # the effective token invisible. It is ignored loudly rather than
+        # silently, so a manual runner migrating from the origin project
+        # sees why its token stopped being used.
+        log(
+            "[WARN] GH_PAT is set but no longer read; the review "
+            "authenticates with GH_TOKEN only"
+        )
+
     gh_token = os.getenv("GH_TOKEN", "")
-    token = gh_pat if gh_pat else gh_token
-    if not token:
+    if not gh_token:
         sys.stderr.write("[ERR] GitHub token not configured.\n")
         sys.exit(1)
-
-    os.environ["GH_TOKEN"] = token
 
     diff = sys.stdin.read()
     log(f"[INFO] Diff length: {len(diff)}")

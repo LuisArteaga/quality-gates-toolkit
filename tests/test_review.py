@@ -1263,12 +1263,14 @@ class MainTests(unittest.TestCase):
     issue #45 so the changed wiring is exercised by passing tests.
     """
 
-    def _run_main(self, judge_statuses, diff="some diff"):
+    def _run_main(self, judge_statuses, diff="some diff", env_extra=None):
         """Invoke review.main() with all externals mocked.
 
         ``judge_statuses`` is a dict mapping judge_key -> status string
-        returned by the mocked run_judge. Returns the captured call args so
-        assertions can inspect the review action and body.
+        returned by the mocked run_judge. ``env_extra`` adds/overrides
+        variables of the otherwise token-clean environment (e.g. the legacy
+        ``GH_PAT``). Returns the captured call args so assertions can inspect
+        the review action and body.
         """
         from telemetry import DummyTracer
 
@@ -1288,12 +1290,16 @@ class MainTests(unittest.TestCase):
 
         env = {
             "PR_NUMBER": "42",
-            "GH_PAT": "tok",
+            "GH_TOKEN": "tok",
             "OPENROUTER_API_KEY": "or-key",
             "GITHUB_WORKSPACE": "/tmp/nonexistent_workspace_xyz",
         }
-        # Ensure GH_TOKEN not set so GH_PAT is used.
-        clean_env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN",)}
+        if env_extra:
+            env.update(env_extra)
+        # clear=True: the token must come from this env, not the runner's.
+        clean_env = {
+            k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GH_PAT")
+        }
         clean_env.update(env)
 
         stdin_mock = MagicMock()
@@ -1326,6 +1332,26 @@ class MainTests(unittest.TestCase):
         for key in review.JUDGE_KEYS:
             self.assertIn(f"{key}: PASS", body)
 
+    def test_gh_token_authenticates_when_both_variables_are_set(self):
+        """D-0005 token contract (the precedence half lives here because it
+        needs the full-flow mocks): GH_TOKEN is authoritative even when the
+        legacy GH_PAT is also set — the origin code let the undocumented
+        variable win — and the warning still names the ignored variable."""
+        logged = []
+        with patch("review.log", side_effect=logged.append):
+            mock_exit, submit_calls = self._run_main(
+                {k: "PASS" for k in review.JUDGE_KEYS},
+                env_extra={"GH_PAT": "legacy-token"},
+            )
+
+        mock_exit.assert_called_once_with(0)
+        self.assertEqual(len(submit_calls), 1)
+        self.assertIn(
+            "[WARN] GH_PAT is set but no longer read; the review "
+            "authenticates with GH_TOKEN only",
+            logged,
+        )
+
     def test_main_any_failed_requests_changes_and_exits_one(self):
         """AC: any judge FAIL -> review action 'request-changes', exit(1)."""
         statuses = {k: "PASS" for k in review.JUDGE_KEYS}
@@ -1335,6 +1361,62 @@ class MainTests(unittest.TestCase):
         self.assertEqual(len(submit_calls), 1)
         _, action, _ = submit_calls[0]
         self.assertEqual(action, "request-changes")
+
+
+class TokenContractTests(unittest.TestCase):
+    """D-0005 token contract: ``GH_TOKEN`` is the single variable the review
+    authenticates with.
+
+    The ported origin code read a legacy ``GH_PAT`` first, so the effective
+    token depended on a variable no workflow exports and no doc lists —
+    invisible in the run's log and impossible for a caller to reason about.
+    These tests pin the replacement contract: ``GH_TOKEN`` authenticates the
+    run, its absence fails loudly, and the legacy variable is reported and
+    ignored rather than silently winning. The precedence half of the contract
+    (both variables set) lives in ``MainTests``, which owns the full-flow
+    mocks.
+    """
+
+    def _tokenless_env(self, **overrides):
+        env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GH_PAT")}
+        env["PR_NUMBER"] = "42"
+        env["OPENROUTER_API_KEY"] = "or-key"
+        env.update(overrides)
+        return env
+
+    def test_main_exits_when_no_token_is_configured(self):
+        """No GH_TOKEN at all: fail fast, before any judging or network I/O."""
+        stderr = io.StringIO()
+        with (
+            patch("review.init_telemetry"),
+            patch("sys.stderr", stderr),
+            patch.dict(os.environ, self._tokenless_env(), clear=True),
+        ):
+            with self.assertRaises(SystemExit) as caught:
+                review.main()
+
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("[ERR] GitHub token not configured.", stderr.getvalue())
+
+    def test_legacy_gh_pat_is_reported_and_does_not_authenticate(self):
+        """GH_PAT alone: the run says why it is ignoring the variable and
+        then fails on the missing GH_TOKEN — it never authenticates with the
+        legacy value."""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch("review.init_telemetry"),
+            patch("sys.stdout", stdout),
+            patch("sys.stderr", stderr),
+            patch.dict(
+                os.environ, self._tokenless_env(GH_PAT="legacy-token"), clear=True
+            ),
+        ):
+            with self.assertRaises(SystemExit) as caught:
+                review.main()
+
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("GH_PAT is set but no longer read", stdout.getvalue())
+        self.assertIn("[ERR] GitHub token not configured.", stderr.getvalue())
 
 
 class UndeliveredReviewBodyTests(unittest.TestCase):
@@ -1386,13 +1468,15 @@ class UndeliveredReviewBodyTests(unittest.TestCase):
 
         env = {
             "PR_NUMBER": "42",
-            "GH_PAT": "tok",
+            "GH_TOKEN": "tok",
             "OPENROUTER_API_KEY": "or-key",
             "GITHUB_WORKSPACE": "/tmp/nonexistent_workspace_xyz",
         }
         if body_path is not None:
             env["REVIEW_BODY_PATH"] = body_path
-        clean_env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+        clean_env = {
+            k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GH_PAT")
+        }
         clean_env.update(env)
 
         stdin_mock = MagicMock()

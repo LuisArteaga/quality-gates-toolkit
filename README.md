@@ -22,7 +22,7 @@ this public repository at a pinned ref (`toolkit-ref`).
 | `diff-coverage.yml` | 100% changed-line coverage gate (consumes the coverage artifact; PR events only). |
 | `security.yml` | Semgrep + pip-audit. Semgrep runs through the toolkit's `semgrep-scan` wrapper, which retries a failed ruleset fetch a bounded number of times (D-0025). |
 | `secret-scan.yml` | The toolkit's own stdlib secret scanner over all tracked files. Best-effort regex detection — not a Gitleaks replacement; pair it with Gitleaks for defense in depth if you want broader coverage. |
-| `llm-pr-review.yml` | LLM judges over the PR diff, posting one combined review. Requires `openrouter-api-key`. |
+| `llm-pr-review.yml` | LLM judges over the PR diff, posting one combined review. Requires `openrouter-api-key` only — no PAT: the review is posted by `github-actions[bot]` as a comment review. |
 | `js-test.yml` | Runs the caller's `npm test` on a caller-chosen Node version. Harness-only (D-0012): the project owns the test runner via `package.json`. |
 | `js-typecheck.yml` | Runs the caller's `npm run typecheck` under the same JS harness contract. |
 | `js-lint.yml` | Runs the caller's `npm run lint` under the same JS harness contract. |
@@ -186,9 +186,14 @@ the JS micro-workflows directly — see
 ## Secrets
 
 The workflows declare two secret *inputs* (`openrouter-api-key`,
-`judge-token`). The repo secret names below are the convention this
-repository uses — the input names are the contract. Deterministic-only
-usage (`enable-llm-review: false`, the default) reads no secrets at all.
+`judge-token`). **Only `OPENROUTER_API_KEY` is ever needed: no GitHub PAT is
+required to post a review.** Without `judge-token` the review is posted by
+`github-actions[bot]` as a comment review carrying the identical body, and the
+check's exit code is the merge gate (D-0005). The toolkit's own CI runs
+exactly this PAT-free path on every one of its PRs. The repo secret name
+`JUDGE_GH_TOKEN` below is the convention this repository documents for the
+optional input — the input names are the contract. Deterministic-only usage
+(`enable-llm-review: false`, the default) reads no secrets at all.
 
 ### `OPENROUTER_API_KEY`
 
@@ -200,14 +205,16 @@ usage (`enable-llm-review: false`, the default) reads no secrets at all.
 - Create the key in the OpenRouter dashboard (Keys) and consider a per-key
   spend limit.
 
-### `JUDGE_GH_TOKEN`
+### `JUDGE_GH_TOKEN` (optional — the tokenless path is the default)
 
-- **Optional.** When omitted, the review falls back to the caller's
-  `github.token` and reviews are authored by `github-actions[bot]`. That is
-  enough for the default contract: the review is posted as a **comment
-  review** (state `COMMENTED`) and the check's exit code — not the review
-  state — is the merge gate (FAIL / NEEDS REVIEW exits nonzero; see
-  [Consuming verdicts](#consuming-verdicts)).
+- **Not needed for the default contract.** When it is not set, the review
+  falls back to the caller's `github.token` and is authored by
+  `github-actions[bot]`: the review is posted as a **comment review** (state
+  `COMMENTED`) with the identical body — hidden verdict block, per-judge
+  reasoning and KPI table — and the check's exit code, not the review state,
+  is the merge gate (FAIL / NEEDS REVIEW exits nonzero; see
+  [Consuming verdicts](#consuming-verdicts)). Nothing is lost by leaving the
+  secret unset, and the toolkit's own CI is the live example.
 - **Why an installation token cannot do more:** GitHub forbids the Actions
   token from approving a pull request at all — the repository setting
   "Allow GitHub Actions to create and approve pull requests" governs it,
@@ -215,7 +222,8 @@ usage (`enable-llm-review: false`, the default) reads no secrets at all.
   `--approve` without a user identity; an all-PASS verdict from a plain
   consumer still posts its verdict block, per-judge reasoning and KPI
   table, only as a comment.
-- **When to pass a user PAT:**
+- **When to pass a user PAT:** only for consumer-side integration models —
+  neither case is a toolkit prerequisite.
   - *Verdict-driven review state:* with a PAT whose owner differs from the
     PR author, the review state follows the verdict — `--approve` on
     all-PASS, `--request-changes` on FAIL / NEEDS REVIEW.
@@ -498,6 +506,7 @@ The workflows set these for you from the inputs above; when running
 |---|---|
 | `<NODE>_MODEL` (e.g. `SECURITY_MODEL`) | Per-node model override; highest precedence. |
 | `AGENT_MODEL` | Global model override (above `factory.json`, below per-node). |
+| `GH_TOKEN` | GitHub token the review posts with; `llm-pr-review.yml` sets it from `judge-token` or the caller's `github.token`. It is the only token variable the review reads — the origin project's legacy `GH_PAT` is reported and ignored (D-0005). |
 | `REVIEW_CONFIG_PATH` | Judge config path; set from `config-path` (default `config/factory.json`). |
 | `REVIEW_BATCH_BUDGET_CHARS` | Per-batch character budget for the judge diff; set from `batch-budget-chars` (effective default `200000`). |
 | `REVIEW_RETRY_BUDGET_SECONDS` | OpenRouter retry budget in seconds before the run gives up (default `2700` = 45 min; retries are 429/5xx-aware, and it is also the total wall-clock bound of one multi-batch judge). |
@@ -692,7 +701,9 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
   workflow names; the toolkit's own `ci.yml` is a live example.
 - To automerge on verdicts, parse the hidden block (an HTML comment in the
   review body). Verify the review author against a trusted judge identity —
-  the reason `judge-token` exists (see [Secrets](#secrets)).
+  without `judge-token` that author is `github-actions[bot]`, so pass a PAT
+  only if your automerge loop pins a *different* trusted identity (see
+  [Secrets](#secrets)); that check is the reason `judge-token` exists.
 - A red run does not always mean a posted review: when the submission was
   refused, the same body is still retrievable from the `llm-pr-review-body`
   artifact (uploaded only on that path, D-0024) and the checks UI annotates

@@ -62,11 +62,12 @@ on:
         required: true
       judge-token:
         description: >-
-          Optional GitHub token used to post the review. Falls back to
-          github.token, which posts a comment review (installation tokens
-          cannot approve). Pass a PAT if your consumer verifies review
-          authorship (trusted-identity automerge) or needs the review
-          state to follow the verdict.
+          Not needed for the default contract: without it the review is
+          posted by github-actions[bot] as a comment review carrying the
+          identical verdict block, reasoning and KPI table (installation
+          tokens cannot approve a pull request). Pass a PAT only if your
+          consumer verifies review authorship (trusted-identity automerge)
+          or needs the review state to follow the verdict.
         required: false
 
 permissions:

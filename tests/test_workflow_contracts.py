@@ -700,6 +700,18 @@ def test_ci_dogfoods_the_head_sha_in_implementation_checkouts():
         )
 
 
+def test_ci_llm_review_dogfoods_the_tokenless_default():
+    """D-0005: the tokenless path (github.token → comment review) is the
+    documented default contract, so this repository's own PRs must run it —
+    exactly one judge secret is forwarded and judge-token is deliberately
+    absent. A re-added PAT would silently stop dogfooding what the docs
+    promise consumers."""
+    secrets = _jobs(_load("ci.yml"))["llmreview"]["secrets"]
+    assert secrets == {"openrouter-api-key": "${{ secrets.OPENROUTER_API_KEY }}"}, (
+        f"ci.yml must dogfood the tokenless path, got secrets {sorted(secrets)}"
+    )
+
+
 def test_self_check_lints_and_measures_the_judge_package():
     """D-0017: ruff/mypy/coverage run against the importable package too —
     the judge implementation left scripts/, so a scripts-only self-check

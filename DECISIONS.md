@@ -141,6 +141,28 @@ their integration docs, not in the generic workflow contract.
   rejection — they are different rules with different scopes. The
   exit-code gate (any FAIL / NEEDS REVIEW ⇒ exit 1) is unchanged and
   remains the merge gate.
+- 2026-09-24: The identity-less submission is the **documented default**,
+  not a degraded fallback: one secret (`OPENROUTER_API_KEY`) buys a complete
+  judge review — comment review state, unchanged verdict block, unchanged
+  exit-code gate — so no consumer needs a GitHub PAT. `judge-token` survives
+  only for consumer-side integration models that require a non-bot review
+  identity (verdict-driven review state, trusted-identity automerge); its
+  scope requirements are unchanged. This repository's own CI dogfoods the
+  tokenless path: `ci.yml` forwards `openrouter-api-key` only, so every
+  toolkit PR exercises the contract the docs promise. The published
+  docs (README *Secrets*, the `judge-token` input description) state the
+  same, and the contract suite pins the dogfood so a stray
+  `JUDGE_GH_TOKEN` forward cannot reappear unnoticed.
+- 2026-09-24: The review authenticates with `GH_TOKEN` **only**. `main()` no
+  longer reads the origin project's `GH_PAT`, which took precedence over
+  `GH_TOKEN` — a second, undocumented variable that made the effective token
+  invisible in the run's log and impossible for a caller to reason about.
+  A set `GH_PAT` is now logged as ignored rather than silently winning, so a
+  manual runner migrating from the origin project sees why its token stopped
+  being used; the missing-variable path stays fail-fast. `GH_TOKEN` is
+  documented as a review-run environment variable, and the token contract is
+  pinned by tests (absence fails, `GH_PAT` neither authenticates nor
+  overrides).
 
 ## D-0006 — Hybrid workflow architecture
 
