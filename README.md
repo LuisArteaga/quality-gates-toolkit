@@ -506,6 +506,7 @@ The workflows set these for you from the inputs above; when running
 |---|---|
 | `<NODE>_MODEL` (e.g. `SECURITY_MODEL`) | Per-node model override; highest precedence. |
 | `AGENT_MODEL` | Global model override (above `factory.json`, below per-node). |
+| `GH_TOKEN` | GitHub token the review posts with; `llm-pr-review.yml` sets it from `judge-token` or the caller's `github.token`. It is the only token variable the review reads — the origin project's legacy `GH_PAT` is reported and ignored (D-0005). |
 | `REVIEW_CONFIG_PATH` | Judge config path; set from `config-path` (default `config/factory.json`). |
 | `REVIEW_BATCH_BUDGET_CHARS` | Per-batch character budget for the judge diff; set from `batch-budget-chars` (effective default `200000`). |
 | `REVIEW_RETRY_BUDGET_SECONDS` | OpenRouter retry budget in seconds before the run gives up (default `2700` = 45 min; retries are 429/5xx-aware, and it is also the total wall-clock bound of one multi-batch judge). |
