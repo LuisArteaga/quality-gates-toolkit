@@ -10,6 +10,42 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.6] - 2026-09-25
+
+### Fixed
+
+- A judge answer without the `<findings>` block its prompt requires is no
+  longer read as a **pass**. The verdict was derived from what the parser
+  found rather than from the shape the prompt asks for, so an answer carrying
+  only `<reasoning>` had nothing to parse and fell through to PASS — a merge
+  gate approving a PR on an answer that declared nothing. An answer whose
+  `<findings>` block is *missing* is now unparseable, while an **empty**
+  `<findings>` block stays a legitimate pass (the normal passing answer under
+  the finding-promotion threshold, D-0023). The `<reasoning>` block is not
+  required for a verdict, so a findings-only answer still fails on its finding
+  (D-0026, PR #71).
+- A non-empty unparseable answer is retried **once** with an instruction
+  naming the missing block, instead of blocking the merge with nothing to act
+  on. An answer that is still unreadable after the retry leaves the judge
+  NEEDS REVIEW; it is never nudged twice and never retried on the fallback
+  model (that tail stays triggered by an empty answer), and the added call is
+  bounded by `REVIEW_RETRY_BUDGET_SECONDS` / `REVIEW_CALL_TIMEOUT_SECONDS`
+  like every other call (D-0026, PR #71).
+
+### Changed
+
+- The review body reports the three "no verdict" reasons distinctly: a
+  crashed check (`Check failed to run: …`), an answer the engine could not
+  read (`Judge answer was not parseable (no `<findings>` block).`), and the
+  existing catch-all (`Insufficient context.`). Reporting the unreadable case
+  as missing context sent the author looking for a document instead of at the
+  model's output shape (D-0026, PR #71).
+- The README documents the judge answer contract under *Judge configuration*,
+  gains a troubleshooting entry for the unparseable-answer signature, and
+  records one known limitation: an answer that merely *quotes* the
+  `<findings>` block in prose is read as tagged (the extraction semantics were
+  deliberately left unchanged; the residual hole is tracked separately).
+
 ## [1.8.5] - 2026-09-24
 
 ### Changed
@@ -275,7 +311,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.5...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.6...HEAD
+[1.8.6]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.2...v1.8.3

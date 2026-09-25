@@ -33,7 +33,7 @@ on:
       toolkit-ref:
         description: Toolkit ref providing the Semgrep wrapper implementation.
         type: string
-        default: "v1.8.5"
+        default: "v1.8.6"
 
 permissions:
   contents: read
