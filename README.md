@@ -1,12 +1,117 @@
 # quality-gates-toolkit
 
-Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for
-deterministic and LLM-assisted quality gates.
+**Reusable CI gates for any repository: deterministic checks first, LLM review last, one `uses:` to wire it all.**
 
-Public, MIT-licensed, self-contained: every workflow below runs with **zero
-local setup** in the consumer repository — no vendored scripts, no PAT for
-tooling checkouts. The toolkit's Python implementation is checked out from
-this public repository at a pinned ref (`toolkit-ref`).
+Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for
+deterministic and LLM-assisted quality gates. Public, MIT-licensed and
+self-contained: every workflow runs with **zero local setup** in the consumer
+repository — no vendored scripts, no PAT for tooling checkouts — because the
+toolkit's Python implementation is checked out from this public repository at a
+pinned ref (`toolkit-ref`).
+
+## Why quality-gates-toolkit
+
+- **One call, whole suite.** A single `uses:` wires the deterministic gates and
+  the LLM review together, and the deterministic gates always run first — a PR
+  that fails an enforceable check never spends model budget (D-0001).
+- **Skip-free by construction.** Per-language composites (D-0020) and the
+  micro-workflows (D-0019) call only the gates you want, so the checks list
+  carries no `Skipped` noise.
+- **Zero local setup, pinned.** Callers need no toolkit checkout, no vendored
+  scripts and no PAT — the review is posted tokenless by default (D-0005), and
+  the toolkit implementation is fetched at an immutable release tag (D-0007).
+- **Verdicts you can gate on.** Every review carries the versioned hidden
+  verdict block (D-0002), and the check exits nonzero on FAIL / NEEDS REVIEW,
+  so branch protection can enforce the outcome.
+
+## Quick start (composite)
+
+```yaml
+jobs:
+  quality:
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.5
+    with:
+      coverage-floor: 80
+    secrets:
+      openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+`coverage-floor` is deliberately **required** — a gate threshold is a policy
+decision, not plumbing. All deterministic gates default ON; the LLM review
+defaults OFF (it needs secrets) and runs only on `pull_request` events —
+on other triggers (e.g. `push`) the judge job skips. Minimal caller floor:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write   # only needed when enable-llm-review is on
+```
+
+A nested reusable workflow can narrow but never elevate the caller's token
+scope.
+
+Language composites (D-0020) are the skip-free variant for single-language
+repositories — same defaults, one language:
+
+```yaml
+jobs:
+  quality:
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/python-checks.yml@v1.8.5
+    with:
+      coverage-floor: 80
+```
+
+`js-checks.yml` takes no `coverage-floor` (no coverage artifact contract):
+its three JS gates default ON, plus secret scan on and the LLM review off.
+
+For repositories that are not Python-only, the
+[Which entry point?](#which-entry-point) table maps your language mix to the
+right composite.
+
+### Language toggles
+
+The composite's gate toggles are language-scoped (D-0013):
+
+- **Python gate group** — the unprefixed toggles (`enable-lint`,
+  `enable-test`, `enable-security`, `enable-secret-scan`,
+  `enable-diff-gate`, plus the security sub-toggles) default **ON**.
+- **JS gate group** — `enable-js-lint`, `enable-js-test`,
+  `enable-js-typecheck` default **OFF**: the JS harness is npm-only and
+  fails loudly without a `package-lock.json` in the repository root
+  (D-0012), so a Python-only caller must never need one.
+- `node-version` (default `22`) feeds all three JS jobs, mirroring how
+  `python-version` feeds the Python gates.
+
+The ordering policy spans both groups: the LLM review runs only after
+every **enabled** deterministic gate is green. A JS-only caller disables
+the Python gates and opts in explicitly:
+
+```yaml
+jobs:
+  quality:
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.5
+    with:
+      coverage-floor: 0          # nominal — Python test gate disabled below
+      enable-lint: false
+      enable-test: false
+      enable-security: false
+      enable-diff-gate: false
+      enable-js-test: true
+      enable-js-typecheck: true
+      enable-js-lint: true
+```
+
+`coverage-floor` remains a required input even for JS-only callers —
+`workflow_call` cannot express conditionally-required inputs, and the
+policy contract should not weaken silently; pass a nominal `0` when the
+Python test gate is off. `secret-scan` is language-agnostic and stays on.
+
+That example demonstrates the toggle contract — for a *pure* JS/TS
+repository it is the noisy shape: all six disabled Python gates render as
+`Skipped` checks. Pure-JS repositories use the `js-checks.yml` language
+composite (skip-free with the same one-call ergonomics, D-0020) or call
+the JS micro-workflows directly — see
+[Which entry point?](#which-entry-point).
 
 ## Components
 
@@ -97,91 +202,6 @@ in more than one composite, i.e. `enable-secret-scan` — must be turned on in
 regardless of which composite invokes it, so one review per PR is both
 sufficient and cost-correct. Two enabled judges mean double cost and two
 verdict blocks.
-
-## Quick start (composite)
-
-```yaml
-jobs:
-  quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.5
-    with:
-      coverage-floor: 80
-    secrets:
-      openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
-```
-
-`coverage-floor` is deliberately **required** — a gate threshold is a policy
-decision, not plumbing. All deterministic gates default ON; the LLM review
-defaults OFF (it needs secrets) and runs only on `pull_request` events —
-on other triggers (e.g. `push`) the judge job skips. Minimal caller floor:
-
-```yaml
-permissions:
-  contents: read
-  pull-requests: write   # only needed when enable-llm-review is on
-```
-
-A nested reusable workflow can narrow but never elevate the caller's token
-scope.
-
-Language composites (D-0020) are the skip-free variant for single-language
-repositories — same defaults, one language:
-
-```yaml
-jobs:
-  quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/python-checks.yml@v1.8.5
-    with:
-      coverage-floor: 80
-```
-
-`js-checks.yml` takes no `coverage-floor` (no coverage artifact contract):
-its three JS gates default ON, plus secret scan on and the LLM review off.
-
-### Language toggles
-
-The composite's gate toggles are language-scoped (D-0013):
-
-- **Python gate group** — the unprefixed toggles (`enable-lint`,
-  `enable-test`, `enable-security`, `enable-secret-scan`,
-  `enable-diff-gate`, plus the security sub-toggles) default **ON**.
-- **JS gate group** — `enable-js-lint`, `enable-js-test`,
-  `enable-js-typecheck` default **OFF**: the JS harness is npm-only and
-  fails loudly without a `package-lock.json` in the repository root
-  (D-0012), so a Python-only caller must never need one.
-- `node-version` (default `22`) feeds all three JS jobs, mirroring how
-  `python-version` feeds the Python gates.
-
-The ordering policy spans both groups: the LLM review runs only after
-every **enabled** deterministic gate is green. A JS-only caller disables
-the Python gates and opts in explicitly:
-
-```yaml
-jobs:
-  quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.5
-    with:
-      coverage-floor: 0          # nominal — Python test gate disabled below
-      enable-lint: false
-      enable-test: false
-      enable-security: false
-      enable-diff-gate: false
-      enable-js-test: true
-      enable-js-typecheck: true
-      enable-js-lint: true
-```
-
-`coverage-floor` remains a required input even for JS-only callers —
-`workflow_call` cannot express conditionally-required inputs, and the
-policy contract should not weaken silently; pass a nominal `0` when the
-Python test gate is off. `secret-scan` is language-agnostic and stays on.
-
-That example demonstrates the toggle contract — for a *pure* JS/TS
-repository it is the noisy shape: all six disabled Python gates render as
-`Skipped` checks. Pure-JS repositories use the `js-checks.yml` language
-composite (skip-free with the same one-call ergonomics, D-0020) or call
-the JS micro-workflows directly — see
-[Which entry point?](#which-entry-point).
 
 ## Secrets
 
