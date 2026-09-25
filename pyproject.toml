@@ -13,7 +13,10 @@ name = "quality-gates-toolkit"
 # retry shared by the hook and security.yml (D-0025, PR #63).
 # 1.8.5 carries the tokenless review contract: no PAT needed, and the
 # review authenticates with GH_TOKEN only (D-0005, PR #66).
-version = "1.8.5"
+# 1.8.6 carries the judge answer shape contract: an answer without the
+# <findings> block is no longer read as a pass, and an unreadable answer
+# is retried once (D-0026, PR #71).
+version = "1.8.6"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
