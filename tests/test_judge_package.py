@@ -49,6 +49,7 @@ PRIVATE_PATCH_TARGETS = {
         "_enrich_chunk",
         "_get_batch_budget",
         "_is_empty_content",
+        "_is_unparseable_content",
         "_run_layered_retry",
     ),
     "telemetry": ("_build_langfuse_auth_header", "_is_langfuse_configured"),
