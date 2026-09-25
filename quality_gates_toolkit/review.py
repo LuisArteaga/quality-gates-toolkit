@@ -270,6 +270,15 @@ EMPTY_CONTENT_INSTRUCTION = (
     "with <reasoning> and <findings> tags."
 )
 
+# A non-empty answer the engine cannot read a verdict from gets its own
+# instruction rather than the empty-content one: the model answered, and
+# telling it the answer was "empty" would misdescribe what it has to fix
+# (issue #70). The operative sentence — name the tags — is the same.
+UNPARSEABLE_CONTENT_INSTRUCTION = (
+    "\n\nYour previous response did not include the required <findings> "
+    "block. Please provide a verdict with <reasoning> and <findings> tags."
+)
+
 
 def run_command(cmd, env=None):
     """Runs a shell command and returns code, stdout, stderr."""
@@ -899,6 +908,26 @@ def _is_empty_content(raw_response: str) -> bool:
     return not content or not content.strip()
 
 
+def _is_unparseable_content(raw_response: str) -> bool:
+    """Whether a non-empty answer carries no ``<findings>`` block.
+
+    Every judge prompt asks for a ``<findings>`` block on every answer, and
+    an EMPTY block is the normal passing answer (D-0023's promotion
+    threshold means "no finding" is what a pass looks like). An answer that
+    never opened the block declares no findings *and* no pass, so no verdict
+    can be read from it — the parser would otherwise fall through to PASS on
+    a prose answer (D-0026).
+
+    Empty content is a different failure mode and is NOT this one: it is
+    reported by ``_is_empty_content`` and has its own instruction.
+    """
+    data = json.loads(raw_response, strict=False)
+    content = data["choices"][0]["message"]["content"]
+    if not content or not content.strip():
+        return False
+    return not _has_findings_block(content)
+
+
 def _is_cap_saturated(raw_response: str, max_tokens: int | None) -> bool:
     """Whether the response exhausted its completion-token cap.
 
@@ -928,12 +957,13 @@ def _run_layered_retry(
     max_tokens=None,
     timeout_records=None,
 ):
-    """Execute the layered API-error + empty-content retry/fallback policy
+    """Execute the layered API-error + unusable-content retry/fallback policy
     (ADR-0021, amended 2026-08-31; completion cap added by D-0021;
-    per-call wall-clock ceiling added by D-0022).
+    per-call wall-clock ceiling added by D-0022; unparseable answers added by
+    D-0026).
 
     Wraps the single-call transport (``_call_with_api_retry``) with the
-    API-error fallback trigger and the empty-content quality check, kept
+    API-error fallback trigger and the unusable-content quality checks, kept
     separate from config resolution and telemetry so the policy is testable in
     isolation (issue #51). This function owns only one concern: given a model,
     its messages, and an optional fallback, drive the transport until a
@@ -942,28 +972,38 @@ def _run_layered_retry(
     Retry progression (each attempt already carries its own budgeted
     API-error retry with escalating waits inside ``_call_with_api_retry``):
         1. Primary model, original prompt.
-        2. Primary model, explicit-instruction nudge - only if (1) is empty
-           AND the completion cap was NOT reached. A cap-saturating empty
+        2. Primary model, explicit-instruction nudge - issued at most ONCE,
+           when (1) is unusable: empty (``_is_empty_content``, with
+           ``EMPTY_CONTENT_INSTRUCTION``) or non-empty without the
+           ``<findings>`` block the prompt requires
+           (``_is_unparseable_content``, with
+           ``UNPARSEABLE_CONTENT_INSTRUCTION``). A cap-saturating empty
            response is the degenerate generation itself, so re-asking the
            same route is predicted to repeat it; (2) is skipped and the
-           ladder goes straight to (3).
+           ladder goes straight to (3). A nudge that is itself unusable is
+           never nudged again.
         3. Fallback model, original prompt, routing=None, options=None,
            temperature=0.0, ``max_tokens`` unchanged - fired when the primary
            exhausted its API-error retries (429/5xx/timeouts and calls
            abandoned at the per-call ceiling, from (1) or (2)), when (1)
-           saturated the cap with empty content, or when (2) is empty AND a
-           fallback_model is set. Note that a *survivable* timeout does not
-           reach this step: the retry re-routes the same model (D-0022).
-        4. Give up: an empty body is returned and mapped to ``NEEDS REVIEW``
-           by ``evaluate_response``; an API-error exhausted on the fallback
-           model too propagates to ``run_judge`` (also NEEDS REVIEW).
+           saturated the cap with empty content, or when (2) is EMPTY and a
+           fallback_model is set. The trigger is an empty answer, so a
+           still-unparseable answer is never retried on the fallback: it is
+           returned as-is and ``evaluate_response`` maps it to NEEDS REVIEW.
+           Note that a *survivable* timeout does not reach this step: the
+           retry re-routes the same model (D-0022).
+        4. Give up: an unusable body is returned and mapped to ``NEEDS
+           REVIEW`` by ``evaluate_response``; an API-error exhausted on the
+           fallback model too propagates to ``run_judge`` (also NEEDS
+           REVIEW).
 
     Args:
         judge_key: judge identifier, used only for log messages.
         model: primary model id.
         messages: ``[{system, ...}, {user, ...}]`` prompt messages. The nudge
             attempt reuses these messages with ``EMPTY_CONTENT_INSTRUCTION``
-            appended to the last (user) turn.
+            or ``UNPARSEABLE_CONTENT_INSTRUCTION`` appended to the last
+            (user) turn.
         fallback_model: optional fallback model id (may be ``None``).
         api_key, routing, temperature, options: forwarded to the transport.
         max_tokens: positive completion bound applied to every attempt
@@ -1021,6 +1061,7 @@ def _run_layered_retry(
         return response_body, True, fallback_model, attempt_count
 
     attempt_count = 1
+    nudge_instruction = None
     if _is_empty_content(response_body):
         if _is_cap_saturated(response_body, max_tokens):
             # The degenerate generation IS the cap-saturating empty response
@@ -1041,11 +1082,26 @@ def _run_layered_retry(
             f"[WARN] Judge {judge_key}: empty content from primary model, "
             f"retrying with explicit instruction"
         )
-        # Attempt 2: primary model, explicit-instruction nudge on the last turn.
+        nudge_instruction = EMPTY_CONTENT_INSTRUCTION
+    elif _is_unparseable_content(response_body):
+        # The model answered, but in a form the engine cannot read a verdict
+        # from: it never opened the <findings> block its prompt requires, so
+        # evaluate_response would otherwise read the answer as PASS (D-0026).
+        # Re-ask once, naming the missing block.
+        log(
+            f"[WARN] Judge {judge_key}: answer carries no <findings> block, "
+            f"retrying with explicit instruction"
+        )
+        nudge_instruction = UNPARSEABLE_CONTENT_INSTRUCTION
+
+    if nudge_instruction is not None:
+        # Attempt 2: primary model, explicit-instruction nudge on the last
+        # turn. Issued at most once per call - a nudge that is still unusable
+        # is never nudged again.
         nudge_messages = [
             {"role": m["role"], "content": m["content"]} for m in messages
         ]
-        nudge_messages[-1]["content"] += EMPTY_CONTENT_INSTRUCTION
+        nudge_messages[-1]["content"] += nudge_instruction
         try:
             response_body = _call_with_api_retry(
                 model,
@@ -1085,8 +1141,10 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
         factory (``resolve_model_config``); config is runtime data, not
         interleaved with the call mechanism.
       - **Retry/fallback policy** - delegated to ``_run_layered_retry``, which
-        owns the empty-content check and model fallback progression. Kept
-        free of telemetry so it is unit-testable in isolation.
+        owns the unusable-content checks (empty, and unparseable answers that
+        never opened the ``<findings>`` block) and the model fallback
+        progression. Kept free of telemetry so it is unit-testable in
+        isolation.
       - **Telemetry** - one ``openrouter_chat_completion`` span with input,
         output, ``used_fallback`` and ``final_model`` attributes (ADR-0021's
         "one span, one return path").
@@ -1280,11 +1338,28 @@ def parse_xml_tags(text: str, open_tag: str, close_tag: str) -> str:
     return block.strip()
 
 
+def _has_findings_block(content: str) -> bool:
+    """Whether the answer opened the ``<findings>`` block its prompt requires.
+
+    Presence only — the block's *content* is not inspected here. An empty
+    block is a legitimate answer (D-0023), and ``parse_xml_tags`` cannot tell
+    an absent block from an empty one (both yield ``""``), so the required
+    shape has to be checked against the raw answer.
+    """
+    return "<findings>" in content
+
+
 def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
     """Evaluates the LLM response.
 
     Returns (verdict, reasoning, findings_list)
     where verdict is 'Pass', 'Fail', or 'Needs Review'.
+
+    A verdict requires the ``<findings>`` block: an answer that never opened
+    it declares no findings and no pass, so it is reported as NEEDS REVIEW
+    instead of falling through to PASS (D-0026). An answer that carries
+    the block but leaves it empty IS a verdict — an empty block is the normal
+    passing answer under D-0023's promotion threshold.
     """
     data = json.loads(raw_response, strict=False)
     content = data["choices"][0]["message"]["content"]
@@ -1295,8 +1370,15 @@ def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
     reasoning = parse_xml_tags(content, "<reasoning>", "</reasoning>")
     findings_block = parse_xml_tags(content, "<findings>", "</findings>")
 
-    # Check for refusal / lack of tags
-    if not reasoning and not findings_block:
+    # Check for refusal / lack of the required findings block.
+    if not _has_findings_block(content):
+        if "<reasoning>" in content:
+            return (
+                "Needs Review",
+                "Response has <reasoning> but no <findings> block. "
+                "Original output:\n" + content,
+                [],
+            )
         return (
             "Needs Review",
             "Response lacks both <reasoning> and <findings> tags. Original output:\n"
@@ -1693,8 +1775,8 @@ JUDGE_PROMPTS = {
 
 
 def _aggregate_verdicts(
-    chunk_results: list[tuple[str, str, list[str], str | None, bool, str]],
-) -> tuple[str, str, list[str], str | None, bool, str | None]:
+    chunk_results: list[tuple[str, str, list[str], str | None, bool, str, bool]],
+) -> tuple[str, str, list[str], str | None, bool, str | None, bool]:
     """Aggregate per-chunk judge results into a single judge verdict.
 
     Aggregation rules (ADR-0023):
@@ -1707,17 +1789,20 @@ def _aggregate_verdicts(
         primary model (worst-case reporting so the Fallback Indicator is
         surfaced when any chunk degraded).
       - error: first error encountered; subsequent errors appear in reasoning.
+      - unparseable: True if any chunk's answer carried no ``<findings>``
+        block (D-0026), so the review body can say why that chunk has no
+        verdict instead of reporting missing context.
 
     Args:
         chunk_results: list of (status, reasoning, findings, error,
-            used_fallback, final_model) tuples, one per chunk.
+            used_fallback, final_model, unparseable) tuples, one per chunk.
 
     Returns:
         Aggregated (status, reasoning, findings, error, used_fallback,
-        final_model) tuple.
+        final_model, unparseable) tuple.
     """
     if not chunk_results:
-        return "PASS", "", [], None, False, None
+        return "PASS", "", [], None, False, None, False
 
     if len(chunk_results) == 1:
         return chunk_results[0]
@@ -1729,6 +1814,7 @@ def _aggregate_verdicts(
     any_fallback = False
     fallback_model = None
     primary_model = None
+    any_unparseable = False
 
     for i, (
         c_status,
@@ -1737,6 +1823,7 @@ def _aggregate_verdicts(
         c_error,
         c_fallback,
         c_model,
+        c_unparseable,
     ) in enumerate(chunk_results):
         if c_status == "FAIL":
             agg_status = "FAIL"
@@ -1754,6 +1841,9 @@ def _aggregate_verdicts(
         if c_error and first_error is None:
             first_error = c_error
 
+        if c_unparseable:
+            any_unparseable = True
+
         if c_fallback:
             any_fallback = True
             fallback_model = c_model
@@ -1770,6 +1860,7 @@ def _aggregate_verdicts(
         first_error,
         any_fallback,
         final_model,
+        any_unparseable,
     )
 
 
@@ -1801,7 +1892,7 @@ def run_judge(
     usage_records=None,
 ):
     """Runs a single judge evaluation, returning (status, reasoning, findings,
-    error, used_fallback, final_model).
+    error, used_fallback, final_model, unparseable).
 
     Evaluation path (ADR-0023):
       1. **Empty diff** → short-circuit to PASS, no LLM call.
@@ -1824,6 +1915,12 @@ def run_judge(
     status is normalized to uppercase ('PASS', 'FAIL', 'NEEDS REVIEW').
     On an exception the judge returns 'NEEDS REVIEW' with the error captured.
     used_fallback and final_model are False/None on error paths.
+
+    ``unparseable`` is True when the judge's answer carried no ``<findings>``
+    block, i.e. the engine could not read a verdict from it (D-0026). It
+    is reported separately from ``error`` because the judge DID run: the
+    review body must say "unparseable answer", not "the check crashed", and
+    not the catch-all "insufficient context".
 
     When ``usage_records`` is a list, every successful LLM response's
     usage KPI record (actual model, serving provider, tokens, cost) is
@@ -1848,7 +1945,7 @@ def run_judge(
             span.set_attribute("used_fallback", False)
             span.set_attribute("final_model", cfg["model"])
             span.set_status(trace.Status(trace.StatusCode.OK))
-            return "PASS", "", [], None, False, cfg["model"]
+            return "PASS", "", [], None, False, cfg["model"], False
 
         # 2. Fast path — diff fits in one batch, no splitting.
         if len(diff) <= budget:
@@ -1856,22 +1953,36 @@ def run_judge(
             span.set_attribute("eval.diff_total_chars", len(diff))
             span.set_attribute("eval.workspace_dir", resolve_workspace_dir())
             enriched_diff = _enrich_chunk(diff, resolve_workspace_dir())
-            status, reasoning, findings, error, used_fallback, final_model = (
-                _run_single_chunk(
-                    judge_key,
-                    prompt,
-                    enriched_diff,
-                    api_key,
-                    llm_caller,
-                    span,
-                    cfg["model"],
-                    usage_records,
-                )
+            (
+                status,
+                reasoning,
+                findings,
+                error,
+                used_fallback,
+                final_model,
+                unparseable,
+            ) = _run_single_chunk(
+                judge_key,
+                prompt,
+                enriched_diff,
+                api_key,
+                llm_caller,
+                span,
+                cfg["model"],
+                usage_records,
             )
             _set_judge_span_attributes(
                 span, status, findings, used_fallback, final_model
             )
-            return status, reasoning, findings, error, used_fallback, final_model
+            return (
+                status,
+                reasoning,
+                findings,
+                error,
+                used_fallback,
+                final_model,
+                unparseable,
+            )
 
         # 3. Multi-batch path — split per-file, pack, iterate, aggregate.
         chunks = split_diff_by_file(diff)
@@ -1891,7 +2002,9 @@ def run_judge(
         # at most what one budgeted call may spend.
         judge_deadline = time.monotonic() + API_RETRY_BUDGET_SECONDS
 
-        chunk_results: list[tuple[str, str, list[str], str | None, bool, str]] = []
+        chunk_results: list[
+            tuple[str, str, list[str], str | None, bool, str, bool]
+        ] = []
         for index, batch in enumerate(batches):
             if time.monotonic() >= judge_deadline:
                 skipped = len(batches) - index
@@ -1902,7 +2015,7 @@ def run_judge(
                 )
                 log(f"[ERR] Judge {judge_key}: {message}")
                 chunk_results.append(
-                    ("NEEDS REVIEW", "", [], message, False, cfg["model"])
+                    ("NEEDS REVIEW", "", [], message, False, cfg["model"], False)
                 )
                 break
             enriched_batch = _enrich_chunk(batch, resolve_workspace_dir())
@@ -1918,11 +2031,25 @@ def run_judge(
             )
             chunk_results.append(result)
 
-        status, reasoning, findings, error, used_fallback, final_model = (
-            _aggregate_verdicts(chunk_results)
-        )
+        (
+            status,
+            reasoning,
+            findings,
+            error,
+            used_fallback,
+            final_model,
+            unparseable,
+        ) = _aggregate_verdicts(chunk_results)
         _set_judge_span_attributes(span, status, findings, used_fallback, final_model)
-        return status, reasoning, findings, error, used_fallback, final_model
+        return (
+            status,
+            reasoning,
+            findings,
+            error,
+            used_fallback,
+            final_model,
+            unparseable,
+        )
 
 
 def _run_single_chunk(
@@ -1934,13 +2061,17 @@ def _run_single_chunk(
     span,
     default_model: str,
     usage_records: list | None = None,
-) -> tuple[str, str, list[str], str | None, bool, str]:
+) -> tuple[str, str, list[str], str | None, bool, str, bool]:
     """Evaluate a single diff chunk via ``llm_caller`` and return a result tuple.
 
     Catches exceptions and converts them to a NEEDS REVIEW verdict with the
     error captured, mirroring the original ``run_judge`` error handling.
     On success, the response's usage record is appended to
     ``usage_records`` when a collector list is provided.
+
+    The last element reports whether the answer carried no ``<findings>``
+    block — the engine could read no verdict from it (D-0026). It stays
+    False on the exception path, where ``error`` carries the reason instead.
     """
     reasoning = ""
     findings: list[str] = []
@@ -1948,6 +2079,7 @@ def _run_single_chunk(
     status = "NEEDS REVIEW"
     used_fallback = False
     final_model = default_model
+    unparseable = False
 
     try:
         raw_resp, metadata = llm_caller(judge_key, prompt, chunk_diff, api_key)
@@ -1969,6 +2101,11 @@ def _run_single_chunk(
             status = "FAIL"
         else:
             status = "NEEDS REVIEW"
+            # A NEEDS REVIEW with content the parser could not read a verdict
+            # from (no <findings> block) is reported as such rather than as
+            # missing context: the judge answered, and the answer's SHAPE is
+            # what has to change (D-0026).
+            unparseable = _is_unparseable_content(raw_resp)
     except Exception as e:
         log(f"[ERR] Judge {judge_key} chunk failed: {e}")
         status = "NEEDS REVIEW"
@@ -1976,7 +2113,15 @@ def _run_single_chunk(
         reasoning = f"Exception encountered: {e}"
         span.record_exception(e)
 
-    return status, reasoning, findings, error, used_fallback, final_model
+    return (
+        status,
+        reasoning,
+        findings,
+        error,
+        used_fallback,
+        final_model,
+        unparseable,
+    )
 
 
 def _set_judge_span_attributes(span, status, findings, used_fallback, final_model):
@@ -2023,6 +2168,8 @@ def build_review_body(judges_data: dict) -> str:
         else:
             if info.get("error"):
                 details = f"Check failed to run: {info['error']}"
+            elif info.get("unparseable"):
+                details = "Judge answer was not parseable (no `<findings>` block)."
             else:
                 details = "Insufficient context."
 
@@ -2201,6 +2348,7 @@ def main():
                 "reasoning": "",
                 "findings": [],
                 "error": None,
+                "unparseable": False,
                 "used_fallback": False,
                 "final_model": None,
                 "usage": None,
@@ -2233,7 +2381,15 @@ def main():
             log(f"[INFO] Running judge: {judge_key}")
             judge_started = time.monotonic()
             usage_records: list[dict[str, Any]] = []
-            status, reasoning, findings, error, used_fallback, final_model = run_judge(
+            (
+                status,
+                reasoning,
+                findings,
+                error,
+                used_fallback,
+                final_model,
+                unparseable,
+            ) = run_judge(
                 judge_key,
                 prompt,
                 diff,
@@ -2246,6 +2402,7 @@ def main():
             judge_info["reasoning"] = reasoning
             judge_info["findings"] = findings
             judge_info["error"] = error
+            judge_info["unparseable"] = unparseable
             judge_info["used_fallback"] = used_fallback
             judge_info["final_model"] = final_model
 

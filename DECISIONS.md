@@ -1315,3 +1315,117 @@ None.
   looks like from a consumer's side.
 - Issue #39 — the version-pinning axis of the same gate, including the
   explicit non-goal (no vendored ruleset) this entry keeps.
+
+## D-0026 — A judge answer must carry the `<findings>` block; an unreadable answer is retried once
+
+- Date: 2026-09-25
+- Status: Accepted
+
+### Decision
+
+The judge **response contract** is the `<findings>` block, and an answer
+without it is not a verdict:
+
+1. **The required shape is the `<findings>` block.** An answer whose block is
+   **missing** is unparseable: it declares no findings *and* no pass, so
+   `evaluate_response` reports it as NEEDS REVIEW instead of deriving a PASS
+   from the absence of parsed findings. An answer that carries the block but
+   leaves it **empty** is a legitimate PASS and stays one — under D-0023's
+   promotion threshold, "no finding" is what a pass looks like. A `<reasoning>`
+   block is not required for a verdict to be read (a findings-only answer is
+   still a verdict); it is required only in the sense that an answer with
+   neither tag is unparseable too.
+2. **One retry, on the same model.** A non-empty unparseable answer gets the
+   treatment the empty answer already gets: exactly one more call to the
+   primary model with an instruction appended to the last (user) turn. The
+   instruction names the missing block
+   (`UNPARSEABLE_CONTENT_INSTRUCTION`) rather than reusing the empty-content
+   one, whose first sentence would misdescribe an answer that was not empty.
+   The retry is issued at most once per judge call: a nudge that is still
+   unparseable is never nudged again, and it is not retried on the fallback
+   model — that tail stays triggered by an **empty** answer, which is the
+   pre-existing rule. The added call is bounded by
+   `REVIEW_RETRY_BUDGET_SECONDS` and `REVIEW_CALL_TIMEOUT_SECONDS` like every
+   other call.
+3. **A retry can never manufacture a PASS.** The retried answer goes through
+   the same parser as the first one: only a tagged answer with an empty
+   `<findings>` block passes, and an answer that is still unreadable ends as
+   NEEDS REVIEW. The hidden verdict block (D-0002) and the any-non-PASS merge
+   gate are unchanged.
+4. **The three "no verdict" reasons stay distinguishable in the review body.**
+   A judge with no verdict can have crashed (`error` → `Check failed to run:
+   …`), answered in a form the engine cannot read (unparseable → `Judge answer
+   was not parseable (no `<findings>` block).`), or produced nothing the
+   pipeline could use (the existing `Insufficient context.` catch-all). The
+   unparseable case is reported as its own field on the judge result rather
+   than folded into `error`, because the judge did run — what has to change is
+   the answer's shape, and saying "insufficient context" sends the author
+   looking for a missing document instead.
+
+### Rationale
+
+The parser accepted a malformed answer in both directions, and the dangerous
+one was silent. `verdict` is initialised to `"Pass"` and only becomes `"Fail"`
+when a findings line parses, so an answer with `<reasoning>` and no
+`<findings>` block had nothing to parse and *passed*: a merge gate that
+approves a PR on an answer that never declared its findings. The other
+direction blocked a merge with nothing to act on: an untagged non-empty answer
+was reported as NEEDS REVIEW with an empty findings list and the catch-all
+"Insufficient context.", which names a cause the engine never established —
+the observed case (social-engagement-engine #49, five judge executions, one
+node, complete prose reviews that said "Approve the direction") sent the
+author hunting for a missing ADR instead of at the model's output shape.
+
+Retrying rather than failing immediately matches the treatment an empty answer
+already gets, and the evidence says the retry is worth having: the same model
+produced correctly tagged answers for the other three judges in the same run,
+and a re-ask with an explicit instruction is the cheapest way to recover a
+format-adherence failure. The bound matters more than the retry: the issue's
+own constraint is that a retry must not be able to turn a refusal into a PASS,
+which is why the retried answer is parsed by the same code path and why the
+nudge is never issued twice.
+
+Requiring **both** tags was considered and rejected on the issue's own edge
+cases. An answer with a `<findings>` block but no `<reasoning>` is a verdict
+today (Fail when it carries a finding), and the issue lists that case as
+correct; requiring both would have flipped it to unparseable and retried a
+correct answer. What actually distinguishes a verdict from prose is whether
+the answer opened the block the prompt asked for, so that is the predicate —
+and the `_has_findings_block` check reads the raw answer, because
+`parse_xml_tags` cannot tell an absent block from an empty one (both yield
+`""`).
+
+The residual hole is deliberately left open and recorded: `parse_xml_tags`
+reads the tags wherever they appear, so prose that *quotes* the block counts
+as tagged, and its prose content parses into no findings. Tightening that
+would change extraction semantics for answers that are merely sloppy — a
+`<findings>` block carrying one JSON line plus an explanatory sentence parses
+today and would become unparseable — which is a different decision with its
+own evidence, and issue #70 scoped it as "worth a test either way". The
+behaviour is pinned by a test that names it as a boundary, not as desired
+behaviour.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- Issue #70 — the problem statement, the two directions of the parser gap,
+  the acceptance criteria, and the edge-case list this entry resolves.
+- Local probe of the parser before the fix (2026-09-25, this repository):
+  `<reasoning>…</reasoning>` → `('Pass', 'looks fine', [])`, plain prose →
+  `('Needs Review', 'Response lacks both …', [])`, an empty `<findings>` block
+  → `('Pass', 'r', [])` — the first line is the silent-PASS direction.
+- social-engagement-engine #49 (2026-09-25) — the in-the-wild record: five
+  judge executions on one commit family (four pushes plus one
+  `gh run rerun --failed`) where the architecture node returned a complete
+  prose review using 1,908–3,761 reasoning tokens in a single call with no
+  timeouts, on the same model two passing nodes ran in the same executions,
+  while every deterministic gate was green.
+- D-0023 — the promotion threshold that makes an empty `<findings>` block the
+  normal passing answer, and therefore why the fix targets a *missing* block.
+- D-0022 — the per-call ceiling and retry budget the added call stays inside.
+- D-0002 — the hidden verdict-block format and the any-non-PASS merge gate,
+  both unchanged.
+

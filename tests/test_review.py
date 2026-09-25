@@ -87,6 +87,55 @@ class ParseFindingsTests(unittest.TestCase):
         self.assertEqual(verdict, "Fail")
         self.assertEqual(findings, ["bug|no closing tag"])
 
+    def test_reasoning_without_findings_block_is_not_a_pass(self):
+        """AC (issue #70): an answer that never opened the required
+        <findings> block declares no findings AND no pass, so it is
+        NEEDS REVIEW — never PASS — and the reason names the missing block
+        so the author looks at the answer's shape, not at missing context."""
+        raw = self._build_response("<reasoning>looks fine to me</reasoning>\n")
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Needs Review")
+        self.assertEqual(findings, [])
+        self.assertIn("no <findings> block", reasoning)
+        self.assertIn("looks fine to me", reasoning)
+
+    def test_findings_block_without_reasoning_is_still_a_verdict(self):
+        """Edge case (issue #70): the required shape is the <findings> block.
+        An answer that carries it without a <reasoning> block is a verdict —
+        and a parsed finding still fails it."""
+        raw = self._build_response(
+            '<findings>\n{"severity": "bug", "message": "x"}\n</findings>'
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Fail")
+        self.assertEqual(findings, ["bug|x"])
+
+    def test_empty_findings_block_without_reasoning_still_passes(self):
+        """Edge case (issue #70): an empty <findings> block is the normal
+        passing answer (D-0023), with or without a <reasoning> block — the
+        fix is about a MISSING block, not an empty one."""
+        raw = self._build_response("<findings>\n</findings>\n")
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Pass")
+        self.assertEqual(findings, [])
+
+    def test_tags_quoted_inside_prose_are_read_as_a_tagged_answer(self):
+        """Edge case (issue #70): ``parse_xml_tags`` reads the tags wherever
+        they appear, so prose that QUOTES the block counts as tagged; its
+        prose content parses into no findings and the answer passes.
+
+        Recorded as the current boundary of the extraction helper, not as
+        desired behaviour — issue #70 deliberately left ``parse_xml_tags``
+        semantics unchanged and the residual hole is tracked separately.
+        """
+        raw = self._build_response(
+            "I would wrap my verdict in <findings></findings> if I had one, "
+            "but the diff looks fine to me."
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Pass")
+        self.assertEqual(findings, [])
+
 
 class SystemPromptTests(unittest.TestCase):
     def test_prompt_instructs_findings_xml_block(self):
@@ -289,6 +338,30 @@ class BuildReviewBodyTests(unittest.TestCase):
         body = review.build_review_body(data)
         for key in review.JUDGE_KEYS:
             self.assertIn(f"{key}: PASS\n", body)
+
+    def test_build_review_body_names_an_unparseable_answer(self):
+        """AC (issue #70): the summary points at the answer's shape. Reporting
+        "Insufficient context." for an answer the engine could not read sends
+        the author hunting for a missing ADR instead of at the model output."""
+        statuses = {k: "PASS" for k in review.JUDGE_KEYS}
+        statuses["architecture"] = "NEEDS REVIEW"
+        data = _build_judges_data(statuses)
+        data["architecture"]["unparseable"] = True
+        body = review.build_review_body(data)
+        self.assertIn("Judge answer was not parseable", body)
+        self.assertNotIn("Insufficient context.", body)
+        # The hidden verdict block is unchanged (D-0002).
+        self.assertIn("architecture: NEEDS REVIEW\n", body)
+
+    def test_build_review_body_keeps_the_catch_all_for_other_needs_review(self):
+        """A NEEDS REVIEW with neither an error nor an unparseable answer keeps
+        the catch-all text — the new label is not applied to every non-PASS."""
+        statuses = {k: "PASS" for k in review.JUDGE_KEYS}
+        statuses["security"] = "NEEDS REVIEW"
+        data = _build_judges_data(statuses)
+        body = review.build_review_body(data)
+        self.assertIn("Insufficient context.", body)
+        self.assertNotIn("Judge answer was not parseable", body)
 
 
 class ClipChunkTests(unittest.TestCase):
@@ -585,7 +658,7 @@ class RunJudgeTests(unittest.TestCase):
         def raising_caller(judge_key, prompt, diff, api_key):
             raise RuntimeError("LLM down")
 
-        status, reasoning, findings, error, used_fb, final_m = review.run_judge(
+        status, reasoning, findings, error, used_fb, final_m, _ = review.run_judge(
             "security",
             review.SYSTEM_PROMPT_SECURITY,
             "diff",
@@ -606,7 +679,7 @@ class RunJudgeTests(unittest.TestCase):
                 "<reasoning>r</reasoning><findings></findings>"
             ), {"used_fallback": False, "final_model": "test-model", "attempt_count": 1}
 
-        status, reasoning, findings, error, used_fb, final_m = review.run_judge(
+        status, reasoning, findings, error, used_fb, final_m, _ = review.run_judge(
             "syntax_lint",
             review.SYSTEM_PROMPT_SYNTAX_LINT,
             "diff",
@@ -617,6 +690,56 @@ class RunJudgeTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertFalse(used_fb)
         self.assertEqual(final_m, "test-model")
+
+    def test_run_judge_reports_an_unparseable_answer(self):
+        """AC (issue #70): an answer the engine cannot read a verdict from
+        (no <findings> block) is NEEDS REVIEW and is flagged as unparseable —
+        distinct from an execution error, which is the other reason a judge
+        can end up with no verdict."""
+
+        def prose_caller(judge_key, prompt, diff, api_key):
+            return self._build_llm_response(
+                "Approve the direction: the change is sound."
+            ), {"used_fallback": False, "final_model": "test-model", "attempt_count": 1}
+
+        (
+            status,
+            reasoning,
+            findings,
+            error,
+            _,
+            _,
+            unparseable,
+        ) = review.run_judge(
+            "architecture",
+            review.SYSTEM_PROMPT_ARCH,
+            "diff",
+            "key",
+            llm_caller=prose_caller,
+        )
+        self.assertEqual(status, "NEEDS REVIEW")
+        self.assertIsNone(error)
+        self.assertTrue(unparseable)
+        self.assertEqual(findings, [])
+        self.assertIn("<findings>", reasoning)
+
+    def test_run_judge_does_not_flag_an_execution_error_as_unparseable(self):
+        """AC (issue #70): the two reasons a judge has no verdict stay
+        distinguishable — a crashed check is an error, not a bad answer."""
+
+        def raising_caller(judge_key, prompt, diff, api_key):
+            raise RuntimeError("LLM down")
+
+        status, _, _, error, _, _, unparseable = review.run_judge(
+            "security",
+            review.SYSTEM_PROMPT_SECURITY,
+            "diff",
+            "key",
+            llm_caller=raising_caller,
+        )
+        self.assertEqual(status, "NEEDS REVIEW")
+        self.assertEqual(error, "LLM down")
+        self.assertFalse(unparseable)
 
     def test_run_judge_propagates_fallback_metadata(self):
         """AC: used_fallback=True from llm_caller propagates through run_judge."""
@@ -630,7 +753,7 @@ class RunJudgeTests(unittest.TestCase):
                 "attempt_count": 3,
             }
 
-        status, reasoning, findings, error, used_fb, final_m = review.run_judge(
+        status, reasoning, findings, error, used_fb, final_m, _ = review.run_judge(
             "architecture",
             review.SYSTEM_PROMPT_ARCH,
             "diff",
@@ -647,7 +770,7 @@ class RunJudgeTests(unittest.TestCase):
         def never_called(judge_key, prompt, diff, api_key):
             raise AssertionError("LLM caller should not be invoked for empty diff")
 
-        status, reasoning, findings, error, used_fb, final_m = review.run_judge(
+        status, reasoning, findings, error, used_fb, final_m, _ = review.run_judge(
             "security",
             review.SYSTEM_PROMPT_SECURITY,
             "",
@@ -669,7 +792,7 @@ class RunJudgeTests(unittest.TestCase):
                 "<reasoning>r</reasoning><findings></findings>"
             ), {"used_fallback": False, "final_model": "m", "attempt_count": 1}
 
-        status, _, findings, error, _, _ = review.run_judge(
+        status, _, findings, error, _, _, _ = review.run_judge(
             "syntax_lint",
             review.SYSTEM_PROMPT_SYNTAX_LINT,
             "short diff",
@@ -692,7 +815,7 @@ class RunJudgeTests(unittest.TestCase):
                     "<reasoning>r</reasoning><findings></findings>"
                 ), {"used_fallback": False, "final_model": "m", "attempt_count": 1}
 
-            status, _, findings, error, _, _ = review.run_judge(
+            status, _, findings, error, _, _, _ = review.run_judge(
                 "syntax_lint",
                 review.SYSTEM_PROMPT_SYNTAX_LINT,
                 diff,
@@ -731,7 +854,7 @@ class RunJudgeTests(unittest.TestCase):
                     "attempt_count": 1,
                 }
 
-            status, _, findings, error, _, _ = review.run_judge(
+            status, _, findings, error, _, _, _ = review.run_judge(
                 "test_coverage",
                 review.SYSTEM_PROMPT_TEST_COVERAGE,
                 diff,
@@ -766,7 +889,7 @@ class RunJudgeTests(unittest.TestCase):
                     "attempt_count": 1,
                 }
 
-            status, _, findings, error, _, _ = review.run_judge(
+            status, _, findings, error, _, _, _ = review.run_judge(
                 "security",
                 review.SYSTEM_PROMPT_SECURITY,
                 diff,
@@ -792,7 +915,7 @@ class RunJudgeTests(unittest.TestCase):
                     ), {"used_fallback": False, "final_model": "m", "attempt_count": 1}
                 raise RuntimeError("chunk 2 failed")
 
-            status, _, findings, error, _, _ = review.run_judge(
+            status, _, findings, error, _, _, _ = review.run_judge(
                 "architecture",
                 review.SYSTEM_PROMPT_ARCH,
                 diff,
@@ -830,7 +953,7 @@ class RunJudgeTests(unittest.TestCase):
                     "attempt_count": 3,
                 }
 
-            status, _, _, _, used_fb, final_m = review.run_judge(
+            status, _, _, _, used_fb, final_m, _ = review.run_judge(
                 "security",
                 review.SYSTEM_PROMPT_SECURITY,
                 diff,
@@ -856,6 +979,66 @@ class EmptyContentHelperTests(unittest.TestCase):
         """AC: non-empty content -> False."""
         raw = json.dumps({"choices": [{"message": {"content": "hello"}}]})
         self.assertFalse(review._is_empty_content(raw))
+
+
+class UnparseableContentHelperTests(unittest.TestCase):
+    """``_is_unparseable_content``: the response-shape predicate the retry
+    ladder consults (issue #70). It is the response-level form of the
+    parser's rule that a verdict needs a ``<findings>`` block; the same
+    behaviour is asserted through the public surfaces in
+    ``ParseFindingsTests``, ``RunJudgeTests`` and ``LayeredRetryPolicyTests``.
+    """
+
+    def _response(self, content: str) -> str:
+        return json.dumps({"choices": [{"message": {"content": content}}]})
+
+    def test_prose_without_the_block_is_unparseable(self):
+        self.assertTrue(
+            review._is_unparseable_content(self._response("a prose review"))
+        )
+
+    def test_reasoning_only_is_unparseable(self):
+        self.assertTrue(
+            review._is_unparseable_content(self._response("<reasoning>r</reasoning>"))
+        )
+
+    def test_empty_findings_block_is_parseable(self):
+        self.assertFalse(
+            review._is_unparseable_content(self._response("<findings></findings>"))
+        )
+
+    def test_findings_block_with_a_finding_is_parseable(self):
+        self.assertFalse(
+            review._is_unparseable_content(
+                self._response('<findings>\n{"severity": "bug"}\n</findings>')
+            )
+        )
+
+    def test_empty_content_is_a_different_failure_mode(self):
+        """Empty content has its own predicate and its own instruction; this
+        one answers "does the answer carry the required block?" and only for
+        answers that carry content at all."""
+        self.assertFalse(review._is_unparseable_content(self._response("")))
+        self.assertFalse(review._is_unparseable_content(self._response("  \n  ")))
+
+
+class AggregateVerdictsTests(unittest.TestCase):
+    """``_aggregate_verdicts`` folds per-chunk judge results into one verdict.
+
+    The empty-input case is a defensive default rather than a reachable
+    verdict: ``run_judge`` enters the multi-batch path only for a non-empty
+    diff above the batch budget, and ``split_diff_by_file`` answers every such
+    diff with at least one chunk (a diff with no ``diff --git`` header is a
+    single chunk with an empty filename). The default is pinned here because
+    the tuple it returns is the aggregation's contract — and because the guard
+    is the only place it is written down.
+    """
+
+    def test_empty_chunk_list_is_the_defensive_default(self):
+        self.assertEqual(
+            review._aggregate_verdicts([]),
+            ("PASS", "", [], None, False, None, False),
+        )
 
 
 class CallLlmForReviewTests(unittest.TestCase):
@@ -1284,7 +1467,7 @@ class MainTests(unittest.TestCase):
                 judge_key, prompt, diff_arg, api_key, usage_records=None
             ):
                 status = judge_statuses.get(judge_key, "PASS")
-                return (status, "reasoning", [], None, False, "model-x")
+                return (status, "reasoning", [], None, False, "model-x", False)
 
             return fake_run_judge
 
@@ -1464,6 +1647,7 @@ class UndeliveredReviewBodyTests(unittest.TestCase):
                 None,
                 False,
                 "model-x",
+                False,
             )
 
         env = {
@@ -1657,6 +1841,97 @@ class LayeredRetryPolicyTests(unittest.TestCase):
         self.assertEqual(body, good)
         self.assertFalse(used_fb)
         self.assertEqual(final_m, "primary")
+        self.assertEqual(attempts, 1)
+        self.assertEqual(mock_retry.call_count, 1)
+
+    @patch("review._call_with_api_retry")
+    def test_unparseable_then_nudge_succeeds(self, mock_retry):
+        """AC (issue #70): a prose answer that never opened the <findings>
+        block is retried ONCE with an instruction naming the block, and the
+        tagged answer from the retry is the verdict."""
+        prose = self._build_response("Approve the direction: the change is sound.")
+        good = self._build_response("<reasoning>r</reasoning><findings></findings>")
+        mock_retry.side_effect = [prose, good]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "architecture",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+        )
+        self.assertEqual(body, good)
+        self.assertFalse(used_fb)
+        self.assertEqual(final_m, "primary")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(mock_retry.call_count, 2)
+        # The retry reuses the original prompt and names the missing block.
+        second_call_messages = mock_retry.call_args_list[1].args[1]
+        self.assertEqual(second_call_messages[0]["content"], "sys")
+        self.assertEqual(
+            second_call_messages[1]["content"],
+            "diff" + review.UNPARSEABLE_CONTENT_INSTRUCTION,
+        )
+        self.assertIn("<findings>", review.UNPARSEABLE_CONTENT_INSTRUCTION)
+        self.assertNotEqual(
+            review.UNPARSEABLE_CONTENT_INSTRUCTION, review.EMPTY_CONTENT_INSTRUCTION
+        )
+
+    @patch("review._call_with_api_retry")
+    def test_unparseable_twice_gets_exactly_one_extra_call(self, mock_retry):
+        """AC (issue #70): the retry is issued once and never again. A still
+        unparseable answer is returned as-is — evaluate_response maps it to
+        NEEDS REVIEW — and it is not re-nudged nor retried on the fallback
+        model, even though one is configured."""
+        first = self._build_response("Approve the direction.")
+        second = self._build_response("<reasoning>Still approve.</reasoning>")
+        mock_retry.side_effect = [first, second]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "architecture",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+        )
+        self.assertEqual(body, second)
+        self.assertFalse(used_fb)
+        self.assertEqual(final_m, "primary")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(mock_retry.call_count, 2)
+        verdict, reasoning, findings = review.evaluate_response(body)
+        self.assertEqual(verdict, "Needs Review")
+        self.assertEqual(findings, [])
+        self.assertIn("no <findings> block", reasoning)
+
+    @patch("review._call_with_api_retry")
+    def test_answer_with_findings_but_no_reasoning_is_not_retried(self, mock_retry):
+        """The required shape is the <findings> block: an answer that carries
+        it (here without a <reasoning> block) is a verdict, not a retry case
+        (issue #70 edge case)."""
+        findings_only = self._build_response(
+            '<findings>\n{"severity": "bug", "message": "x"}\n</findings>'
+        )
+        mock_retry.return_value = findings_only
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "syntax_lint",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+        )
+        self.assertEqual(body, findings_only)
+        self.assertFalse(used_fb)
         self.assertEqual(attempts, 1)
         self.assertEqual(mock_retry.call_count, 1)
 
@@ -2752,7 +3027,7 @@ class CallDeadlineTests(unittest.TestCase):
                 "diff --git a/b.py b/b.py\n@@ -1 +1 @@\n-x\n+y\n"
             )
             with patch.object(review, "API_RETRY_BUDGET_SECONDS", 0.05):
-                status, reasoning, findings, error, _, _ = review.run_judge(
+                status, reasoning, findings, error, _, _, _ = review.run_judge(
                     "syntax_lint",
                     review.SYSTEM_PROMPT_SYNTAX_LINT,
                     diff,
@@ -3056,7 +3331,7 @@ class UsageAccountingTests(unittest.TestCase):
             raise RuntimeError("LLM down")
 
         records: list[dict] = []
-        status, _, _, error, _, _ = review.run_judge(
+        status, _, _, error, _, _, _ = review.run_judge(
             "syntax_lint",
             review.SYSTEM_PROMPT_SYNTAX_LINT,
             "diff",
@@ -3079,7 +3354,7 @@ class UsageAccountingTests(unittest.TestCase):
                 "attempt_count": 1,
             }
 
-        status, _, _, error, _, _ = review.run_judge(
+        status, _, _, error, _, _, _ = review.run_judge(
             "syntax_lint",
             review.SYSTEM_PROMPT_SYNTAX_LINT,
             "diff",
