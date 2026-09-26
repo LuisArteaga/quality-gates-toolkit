@@ -201,6 +201,42 @@ class TestFallbackModelValidation:
         assert cfg["fallback_model"] is None
         assert "fallback_model" not in capsys.readouterr().err
 
+    def test_explicit_null_resolves_to_none_without_warning(self, tmp_path, capsys):
+        # `dict.get` cannot tell an explicit JSON null from an omitted key,
+        # and both mean "no fallback": not configured is not malformed.
+        _write_factory(
+            tmp_path,
+            {"syntax_lint": {"model": "vendor/model-a", "fallback_model": None}},
+        )
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["fallback_model"] is None
+        assert "fallback_model" not in capsys.readouterr().err
+
+    def test_nested_section_fallback_model_is_validated(self, tmp_path, capsys):
+        # D-0015's nested shape is another consumer-value entry point, so it
+        # goes through the same validation as the flat one.
+        _write_factory(
+            tmp_path,
+            {
+                "ci_cd_pr_judges": {
+                    "security": {"model": "vendor/model-a", "fallback_model": 7},
+                    "architecture": {
+                        "model": "vendor/model-c",
+                        "fallback_model": "vendor/model-d",
+                    },
+                }
+            },
+        )
+        assert judge_config.resolve_model_config("security")["fallback_model"] is None
+        assert (
+            judge_config.resolve_model_config("architecture")["fallback_model"]
+            == "vendor/model-d"
+        )
+        assert (
+            "[WARN] Config key 'fallback_model' for node 'security' must be a "
+            "non-empty string" in capsys.readouterr().err
+        )
+
     @pytest.mark.parametrize("bad_value", [123, 1.5, True, [], {}, "", "   "])
     def test_malformed_fallback_model_warns_and_resolves_to_none(
         self, tmp_path, capsys, bad_value
@@ -299,6 +335,30 @@ class TestEnvOverridePrecedence:
             "[WARN] Config key 'fallback_model' for node 'security' equals "
             "its 'model' (vendor/override)" in capsys.readouterr().err
         )
+
+    def test_fallback_model_equal_to_the_factory_model_only_does_not_warn(
+        self, tmp_path, capsys
+    ):
+        # The other direction of the equality check: the fallback matches the
+        # factory `model` but not the override this node will be asked with,
+        # so it is neither a no-op nor warned about.
+        _write_factory(
+            tmp_path,
+            {
+                "security": {
+                    "model": "vendor/model-a",
+                    "fallback_model": "vendor/model-a",
+                }
+            },
+        )
+        os.environ["SECURITY_MODEL"] = "vendor/override"
+        try:
+            cfg = judge_config.resolve_model_config("security")
+        finally:
+            del os.environ["SECURITY_MODEL"]
+        assert cfg["model"] == "vendor/override"
+        assert cfg["fallback_model"] == "vendor/model-a"
+        assert "fallback_model" not in capsys.readouterr().err
 
 
 class TestConfigPathResolution:

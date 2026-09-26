@@ -1613,12 +1613,14 @@ wherever the key enters the resolved config — the flat factory entry, a
 nested section entry (D-0015) and the env-override branch, which compares
 against the model the node will *actually* be asked with:
 
-1. **A malformed value never becomes the rescue path.** `null`, a non-string,
-   or an empty/blank string warns and resolves to `None`, so the ladder
-   degrades to "no fallback configured" and behaves exactly like a config
-   that omits the key. Threaded through verbatim as before, a broken value
-   surfaced as a judge that "cannot run" on the last attempt (D-0027 routes
-   every unusable answer there), attributing a config error to the model.
+1. **A malformed value never becomes the rescue path.** A non-string or an
+   empty/blank string warns and resolves to `None`, so the ladder degrades to
+   "no fallback configured" and behaves exactly like a config that omits the
+   key. Threaded through verbatim as before, a broken value surfaced as a
+   judge that "cannot run" on the last attempt (D-0027 routes every unusable
+   answer there), attributing a config error to the model. An explicit JSON
+   `null` is *not* a malformation: `dict.get` cannot distinguish it from an
+   omitted key, both mean "no fallback", and it resolves to `None` silently.
 2. **A value equal to the resolved `model` warns but is kept.** The rescue
    path the operator configured is a no-op — the same model is asked again —
    so the condition is reported at resolution time. It is not skipped: the

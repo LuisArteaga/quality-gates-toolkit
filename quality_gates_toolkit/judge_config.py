@@ -96,10 +96,13 @@ def _resolve_fallback_model(value: Any, node_name: str, model: str) -> str | Non
     """The effective ``fallback_model`` for ``node_name``.
 
     A configured fallback is used as-is when it is a non-empty string; a
-    malformed one (``null``, a non-string, or an empty/blank string) warns
-    and resolves to ``None`` so the ladder degrades to "no fallback
-    configured" — a malformed rescue path must not be the failure the last
-    attempt reports (D-0028).
+    malformed one (a non-string, or an empty/blank string) warns and resolves
+    to ``None`` so the ladder degrades to "no fallback configured" — a
+    malformed rescue path must not be the failure the last attempt reports
+    (D-0028). An explicit JSON ``null`` is indistinguishable from an omitted
+    key through ``dict.get`` and means the same thing — no fallback — so it
+    resolves to ``None`` without a warning; "not configured" is not a
+    malformation.
 
     A value equal to the resolved ``model`` warns but is kept: the fallback
     call resets ``routing``, ``options`` and ``temperature`` (ADR-0021), so it
