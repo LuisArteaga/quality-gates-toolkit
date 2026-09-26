@@ -15,9 +15,11 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   Posting needs no consumer PAT: without `judge-token` the review is a
   comment review by `github-actions[bot]` with the identical body, and the
   check's exit code is the merge gate (D-0005).
-  A verdict is read from the `<findings>` block the judge prompt asks for: an
-  answer without that block is retried once and then reported as unparseable
-  rather than read as a pass, and an empty block is a legitimate pass (D-0026).
+  A verdict is read from the `<findings>` block the judge prompt asks for: the
+  block has to be PRESENTED as a block (a tag quoted inside a sentence is
+  prose about the format, not a verdict), an answer without a readable block
+  is retried once and then reported as unparseable rather than read as a
+  pass, and an empty block is a legitimate pass (D-0026).
   When that submission is refused, the body is persisted, dumped to the job
   log and uploaded as a failure-path artifact instead of being discarded
   (D-0024).

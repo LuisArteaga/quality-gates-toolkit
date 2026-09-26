@@ -119,22 +119,128 @@ class ParseFindingsTests(unittest.TestCase):
         self.assertEqual(verdict, "Pass")
         self.assertEqual(findings, [])
 
-    def test_tags_quoted_inside_prose_are_read_as_a_tagged_answer(self):
-        """Edge case (issue #70): ``parse_xml_tags`` reads the tags wherever
-        they appear, so prose that QUOTES the block counts as tagged; its
-        prose content parses into no findings and the answer passes.
+    def test_prose_quoting_an_empty_block_is_not_a_verdict(self):
+        """AC (issue #72): prose that merely *quotes* the block — inline in a
+        sentence — is the judge talking ABOUT the format, not emitting it. The
+        answer is therefore not a tagged answer and must not pass on an empty
+        parse; it takes the D-0026 path (retry once, then NEEDS REVIEW).
 
-        Recorded as the current boundary of the extraction helper, not as
-        desired behaviour — issue #70 deliberately left ``parse_xml_tags``
-        semantics unchanged and the residual hole is tracked separately.
+        Replaces issue #70's pinned boundary, which recorded the opposite
+        behaviour as a limitation of the extraction helper.
         """
         raw = self._build_response(
             "I would wrap my verdict in <findings></findings> if I had one, "
             "but the diff looks fine to me."
         )
         verdict, reasoning, findings = review.evaluate_response(raw)
-        self.assertEqual(verdict, "Pass")
+        self.assertEqual(verdict, "Needs Review")
         self.assertEqual(findings, [])
+        # The reason points at the shape (a tag mentioned in prose), not at a
+        # tag the author can see is present.
+        self.assertIn("only inside prose", reasoning)
+
+    def test_prose_quoting_an_example_block_does_not_fail_on_the_example(self):
+        """AC (issue #72): a judge that illustrates the required format inside
+        its own sentence must not FAIL on the illustration — no verdict may be
+        derived from a block that was only mentioned, even when that block's
+        lines would parse as a finding."""
+        raw = self._build_response(
+            "The format I would use is <findings>\n"
+            '{"severity": "error", "message": "[Q1] just an example"}\n'
+            "</findings>\n"
+            "and the diff itself looks fine to me."
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Needs Review")
+        self.assertEqual(findings, [])
+        self.assertIn("only inside prose", reasoning)
+
+    def test_findings_mention_inside_reasoning_is_not_a_verdict(self):
+        """Edge case (issue #72): a ``<findings>`` mention inside the
+        ``<reasoning>`` block is prose like any other — the answer presents no
+        verdict block."""
+        raw = self._build_response(
+            "<reasoning>I considered <findings> but there is nothing to "
+            "report here.</reasoning>"
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Needs Review")
+        self.assertEqual(findings, [])
+
+    def test_block_without_a_readable_finding_is_not_a_pass(self):
+        """AC (issue #72): a present, non-empty block that yields no finding is
+        prose the judge wrote inside the tags, not a verdict. It is NEEDS
+        REVIEW rather than a silent PASS on an empty parse."""
+        for block in (
+            "I looked at the diff and found nothing worth reporting.\n",
+            "{severity: bug, message: malformed}\n",
+        ):
+            with self.subTest(block=block):
+                raw = self._build_response(f"<findings>\n{block}</findings>\n")
+                verdict, reasoning, findings = review.evaluate_response(raw)
+                self.assertEqual(verdict, "Needs Review")
+                self.assertEqual(findings, [])
+                self.assertIn("no readable finding", reasoning)
+
+    def test_block_carrying_a_finding_beside_prose_still_fails(self):
+        """Edge case (issue #72, decided): a sloppy-but-usable block — one JSON
+        finding plus an explanatory sentence — keeps FAILING with that finding.
+        The rule is readability, not strict per-line format, so an unreadable
+        line beside a readable finding is ignored exactly as before; tightening
+        further would trade an actionable finding for a vaguer NEEDS REVIEW."""
+        raw = self._build_response(
+            "<findings>\n"
+            '{"severity": "bug", "message": "real problem"}\n'
+            "That is the only one I found.\n"
+            "</findings>\n"
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Fail")
+        self.assertEqual(findings, ["bug|real problem"])
+
+    def test_lines_that_are_not_objects_are_ignored(self):
+        """Edge case (issue #72): blank lines and JSON values that are not
+        objects contribute nothing to the verdict — neither a finding nor a
+        reason to discard the findings beside them."""
+        raw = self._build_response(
+            "<findings>\n"
+            '{"severity": "bug", "message": "first"}\n'
+            "\n"
+            "42\n"
+            '["not", "an", "object"]\n'
+            '{"severity": "security", "message": "second"}\n'
+            "</findings>\n"
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Fail")
+        self.assertEqual(findings, ["bug|first", "security|second"])
+
+    def test_compact_two_block_answer_is_still_a_verdict(self):
+        """Boundary (issue #72): the block-boundary rule must not over-tighten.
+        A judge that compacts both blocks onto one line
+        (``</reasoning><findings>``) is still emitting them, so its verdict is
+        read — what precedes the tag decides, not its own line anchor alone."""
+        raw = self._build_response(
+            "<reasoning>r</reasoning><findings>"
+            '{"severity": "bug", "message": "x"}</findings>'
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Fail")
+        self.assertEqual(reasoning, "r")
+        self.assertEqual(findings, ["bug|x"])
+
+    def test_verdict_block_after_an_inline_mention_wins(self):
+        """Edge case (issue #72): the last PRESENTED block wins, so an answer
+        that mentions the format inline and then states its verdict is read
+        from the verdict rather than from the mention."""
+        raw = self._build_response(
+            "I will use the <findings></findings> format as usual.\n"
+            "<reasoning>r</reasoning>\n"
+            '<findings>\n{"severity": "bug", "message": "x"}\n</findings>\n'
+        )
+        verdict, reasoning, findings = review.evaluate_response(raw)
+        self.assertEqual(verdict, "Fail")
+        self.assertEqual(findings, ["bug|x"])
 
 
 class SystemPromptTests(unittest.TestCase):
@@ -983,10 +1089,11 @@ class EmptyContentHelperTests(unittest.TestCase):
 
 class UnparseableContentHelperTests(unittest.TestCase):
     """``_is_unparseable_content``: the response-shape predicate the retry
-    ladder consults (issue #70). It is the response-level form of the
-    parser's rule that a verdict needs a ``<findings>`` block; the same
-    behaviour is asserted through the public surfaces in
-    ``ParseFindingsTests``, ``RunJudgeTests`` and ``LayeredRetryPolicyTests``.
+    ladder consults (issue #70, widened by issue #72). It is the
+    response-level form of the parser's rule that a verdict needs a READABLE
+    ``<findings>`` block; the same behaviour is asserted through the public
+    surfaces in ``ParseFindingsTests``, ``RunJudgeTests`` and
+    ``LayeredRetryPolicyTests``.
     """
 
     def _response(self, content: str) -> str:
@@ -1014,9 +1121,30 @@ class UnparseableContentHelperTests(unittest.TestCase):
             )
         )
 
+    def test_prose_quoting_the_block_is_unparseable(self):
+        """AC (issue #72): the retry has to cover the quoted-tag answers too,
+        otherwise the nudge never reaches exactly the case the fix targets."""
+        self.assertTrue(
+            review._is_unparseable_content(
+                self._response(
+                    "I would wrap my verdict in <findings></findings> if I had one."
+                )
+            )
+        )
+
+    def test_block_without_a_readable_finding_is_unparseable(self):
+        """AC (issue #72): a present, non-empty block that yields no finding
+        carries no verdict either, so the retry covers it like a missing
+        block."""
+        self.assertTrue(
+            review._is_unparseable_content(
+                self._response("<findings>\nnothing to report\n</findings>")
+            )
+        )
+
     def test_empty_content_is_a_different_failure_mode(self):
         """Empty content has its own predicate and its own instruction; this
-        one answers "does the answer carry the required block?" and only for
+        one answers "does the answer carry a readable block?" and only for
         answers that carry content at all."""
         self.assertFalse(review._is_unparseable_content(self._response("")))
         self.assertFalse(review._is_unparseable_content(self._response("  \n  ")))
@@ -1879,6 +2007,33 @@ class LayeredRetryPolicyTests(unittest.TestCase):
         self.assertNotEqual(
             review.UNPARSEABLE_CONTENT_INSTRUCTION, review.EMPTY_CONTENT_INSTRUCTION
         )
+
+    @patch("review._call_with_api_retry")
+    def test_unreadable_block_gets_the_nudge(self, mock_retry):
+        """AC (issue #72): an answer whose block is present but carries no
+        readable finding is a retry case exactly like an answer without the
+        block — the nudge reaches the unreadable shape too."""
+        unreadable = self._build_response(
+            "<findings>\nI found nothing worth reporting.\n</findings>"
+        )
+        good = self._build_response("<reasoning>r</reasoning><findings></findings>")
+        mock_retry.side_effect = [unreadable, good]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "security",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+        )
+        self.assertEqual(body, good)
+        self.assertFalse(used_fb)
+        self.assertEqual(final_m, "primary")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(mock_retry.call_count, 2)
 
     @patch("review._call_with_api_retry")
     def test_unparseable_twice_gets_exactly_one_extra_call(self, mock_retry):
