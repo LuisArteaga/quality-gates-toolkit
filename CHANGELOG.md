@@ -10,6 +10,36 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.8] - 2026-09-26
+
+### Fixed
+
+- An unusable judge answer no longer stops at the same model that produced it.
+  The one same-model retry is kept, but an answer that is **still unreadable**
+  (or still empty) after it is now asked of the node's `fallback_model` when one
+  is configured — the knob that exists for "this model did not answer usably".
+  Before, that tail fired on an empty answer only, so a model or provider that
+  systematically ignores the answer contract was not routable around: one node
+  failed seven consecutive executions that way, spending three calls and
+  blocking the merge with nothing to act on (D-0027, PR #79).
+- A **cap-saturating empty** answer reaches the fallback on the retry attempt
+  too, not only on the first one, so the cap-saturation rule is uniform across
+  the ladder (D-0021, D-0027, PR #79).
+
+### Changed
+
+- The fallback answer is **final**: it is never nudged and never followed by
+  another fallback, so the progression is bounded at three calls — primary,
+  retry, fallback — with the attempt count (not a model comparison) as the
+  guard. A consumer with no `fallback_model` keeps the retry-only behaviour
+  unchanged, and no error is raised for it.
+- When the fallback answered, the review body says so and names the model that
+  produced the verdict, and the KPI table's **Model** column reports it, so
+  *the roster's model answered* and *the fallback rescued it* are
+  distinguishable from the body alone. `fallback_model` is documented in the
+  README's judge-configuration section, including when it is reached
+  (D-0027, PR #79).
+
 ## [1.8.7] - 2026-09-26
 
 ### Fixed
@@ -339,7 +369,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.7...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.8...HEAD
+[1.8.8]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.7...v1.8.8
 [1.8.7]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.6...v1.8.7
 [1.8.6]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.4...v1.8.5
