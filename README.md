@@ -29,7 +29,7 @@ pinned ref (`toolkit-ref`).
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.8
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.9
     with:
       coverage-floor: 80
     secrets:
@@ -56,7 +56,7 @@ repositories — same defaults, one language:
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/python-checks.yml@v1.8.8
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/python-checks.yml@v1.8.9
     with:
       coverage-floor: 80
 ```
@@ -89,7 +89,7 @@ the Python gates and opts in explicitly:
 ```yaml
 jobs:
   quality:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.8
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/pr-checks.yml@v1.8.9
     with:
       coverage-floor: 0          # nominal — Python test gate disabled below
       enable-lint: false
@@ -282,7 +282,7 @@ own `ci.yml` is the live example, D-0019):
 llmreview:
   needs: [lint, test, security, secretscan]
   if: github.event.pull_request.head.repo.full_name == github.repository
-  uses: LuisArteaga/quality-gates-toolkit/.github/workflows/llm-pr-review.yml@v1.8.8
+  uses: LuisArteaga/quality-gates-toolkit/.github/workflows/llm-pr-review.yml@v1.8.9
 ```
 
 `pull_request_target` is deliberately not offered as a workaround: it would
@@ -296,7 +296,7 @@ Each micro-workflow is independently callable, e.g.:
 ```yaml
 jobs:
   security:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.8.8
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/security.yml@v1.8.9
     with:
       scan-paths: "src"
 ```
@@ -326,7 +326,7 @@ centrally — composing micro-workflows yourself means re-implementing it.
 | `config-path` | string | `"config/factory.json"` | Judge config path relative to the caller repository root. |
 | `diff-exclude` | string | `""` | Space-separated git pathspecs excluded from the judge diff (e.g. `uv.lock package-lock.json`). |
 | `batch-budget-chars` | string | `""` (effective `200000`) | Per-batch character budget for splitting the judge diff. Raise it (e.g. `500000`) so large PRs are judged whole — small batches make judges report "tests missing" for files whose tests landed in another batch. |
-| `toolkit-ref` | string | `"v1.8.8"` | Ref of the toolkit checkout — secret scanner, judges, and the Semgrep wrapper `security.yml` runs. Overrides are deliberate. |
+| `toolkit-ref` | string | `"v1.8.9"` | Ref of the toolkit checkout — secret scanner, judges, and the Semgrep wrapper `security.yml` runs. Overrides are deliberate. |
 
 Secrets: `openrouter-api-key` (needed when `enable-llm-review` is on) and
 `judge-token` (optional) — see [Secrets](#secrets).
@@ -356,7 +356,7 @@ gates ON (the caller chose that entry point); `enable-llm-review` defaults
 | `config-path` | string | `"config/factory.json"` | both — judge config path relative to the caller repository root. |
 | `diff-exclude` | string | `""` | both — space-separated git pathspecs excluded from the judge diff (e.g. `uv.lock package-lock.json`). |
 | `batch-budget-chars` | string | `""` (effective `200000`) | both — per-batch character budget for splitting the judge diff. Raise it (e.g. `500000`) so large PRs are judged whole — small batches make judges report "tests missing" for files whose tests landed in another batch. |
-| `toolkit-ref` | string | `"v1.8.8"` | both — ref of the toolkit checkout — secret scanner, judges, and the Semgrep wrapper `security.yml` runs. Overrides are deliberate. |
+| `toolkit-ref` | string | `"v1.8.9"` | both — ref of the toolkit checkout — secret scanner, judges, and the Semgrep wrapper `security.yml` runs. Overrides are deliberate. |
 
 ### Micro-workflows
 
@@ -364,10 +364,10 @@ gates ON (the caller chose that entry point); `enable-llm-review` defaults
 |---|---|---|
 | `lint.yml` | `python-version` `"3.12"` · `lint-paths` `"."` · `extra-pip-packages` `"none"` | — |
 | `test.yml` | `python-version` `"3.12"` · `cov-paths` `"."` · `coverage-floor` (required) · `extra-pip-packages` `"none"` · `prefetch-tree-sitter` `false` | — |
-| `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `enable-semgrep` `true` · `enable-pip-audit` `true` · `toolkit-ref` `"v1.8.8"` | — |
-| `secret-scan.yml` | `toolkit-ref` `"v1.8.8"` | — |
-| `diff-coverage.yml` | `toolkit-ref` `"v1.8.8"` · `coverage-artifact` `"coverage-json"` | — |
-| `llm-pr-review.yml` | `toolkit-ref` `"v1.8.8"` · `config-path` `"config/factory.json"` · `diff-exclude` `""` · `prefetch-tree-sitter` `false` · `batch-budget-chars` `""` | `openrouter-api-key` (required) · `judge-token` (optional) |
+| `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `enable-semgrep` `true` · `enable-pip-audit` `true` · `toolkit-ref` `"v1.8.9"` | — |
+| `secret-scan.yml` | `toolkit-ref` `"v1.8.9"` | — |
+| `diff-coverage.yml` | `toolkit-ref` `"v1.8.9"` · `coverage-artifact` `"coverage-json"` | — |
+| `llm-pr-review.yml` | `toolkit-ref` `"v1.8.9"` · `config-path` `"config/factory.json"` · `diff-exclude` `""` · `prefetch-tree-sitter` `false` · `batch-budget-chars` `""` | `openrouter-api-key` (required) · `judge-token` (optional) |
 | `js-test.yml`, `js-typecheck.yml`, `js-lint.yml` | `node-version` `"22"` | — |
 
 ## JavaScript / TypeScript gates
@@ -391,7 +391,7 @@ harness owns the environment, the project owns the tools.**
 ```yaml
 jobs:
   js-test:
-    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/js-test.yml@v1.8.8
+    uses: LuisArteaga/quality-gates-toolkit/.github/workflows/js-test.yml@v1.8.9
     with:
       node-version: "22"
 ```
@@ -614,7 +614,7 @@ CI judges run, instead of vendoring a `review.py` snapshot that silently
 drifts:
 
 ```bash
-pip install "quality-gates-toolkit @ git+https://github.com/LuisArteaga/quality-gates-toolkit.git@v1.8.8"
+pip install "quality-gates-toolkit @ git+https://github.com/LuisArteaga/quality-gates-toolkit.git@v1.8.9"
 ```
 
 ```python
@@ -649,7 +649,7 @@ new code should import from `quality_gates_toolkit`.
 ```yaml
 repos:
   - repo: https://github.com/LuisArteaga/quality-gates-toolkit
-    rev: v1.8.8            # pin a tag
+    rev: v1.8.9            # pin a tag
     hooks:
       - id: secret-scan    # --staged scan of your staged changes
       - id: mypy           # runs YOUR environment's mypy (advisory)
@@ -805,7 +805,7 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
 
 ## Versioning
 
-- `uses:` pins an immutable release tag (e.g. `@v1.8.8`); `toolkit-ref`
+- `uses:` pins an immutable release tag (e.g. `@v1.8.9`); `toolkit-ref`
   (default = that same tag) selects the toolkit's Python-artifact checkout
   — secret scanner, judges, and the Semgrep wrapper `security.yml` runs.
   Overrides are deliberate.
