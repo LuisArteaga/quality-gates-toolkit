@@ -10,6 +10,35 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.9] - 2026-09-26
+
+### Added
+
+- `fallback_model` is now **validated where the judge config is resolved**
+  (D-0028, PR #83). A malformed value — a non-string, or an empty or blank
+  string — warns and resolves to *no fallback*, so the retry ladder degrades to
+  its documented retry-only behaviour instead of failing on the last attempt
+  and reporting a configuration error as a model error. An explicit JSON `null`
+  is not a malformation: it is indistinguishable from an omitted key through
+  `dict.get` and means the same thing, so it resolves silently.
+- A `fallback_model` **equal to the node's `model` now warns** — that rescue
+  path re-asks the same model. The value is deliberately kept rather than
+  dropped: the fallback call still runs with `routing`, `options` and
+  `temperature` reset, which is a different request for a node with pinned
+  routing, and the ladder's attempt count stays the hard bound (D-0027).
+- The validation applies wherever a consumer value enters the config: the flat
+  entry, a nested section entry (D-0015) and the environment-override branch,
+  which compares against the model the node will actually be asked with.
+
+### Changed
+
+- A configured fallback id is **never checked against OpenRouter's model
+  list** — configuration resolution stays offline and deterministic, so a
+  transient API hiccup can never fail a review. The id must name a model the
+  provider serves; the README's judge-configuration section now states that,
+  the two reported shapes above, and that a nonexistent id fails on the
+  ladder's last attempt rather than at resolution (D-0028, PR #83).
+
 ## [1.8.8] - 2026-09-26
 
 ### Fixed
@@ -369,7 +398,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.8...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.9...HEAD
+[1.8.9]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.8...v1.8.9
 [1.8.8]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.7...v1.8.8
 [1.8.7]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.6...v1.8.7
 [1.8.6]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.5...v1.8.6
