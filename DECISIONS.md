@@ -1345,11 +1345,12 @@ without it is not a verdict:
    (`UNPARSEABLE_CONTENT_INSTRUCTION`) rather than reusing the empty-content
    one, whose first sentence would misdescribe an answer that was not empty.
    The retry is issued at most once per judge call: a nudge that is still
-   unparseable is never nudged again, and it is not retried on the fallback
-   model — that tail stays triggered by an **empty** answer, which is the
-   pre-existing rule. The added call is bounded by
-   `REVIEW_RETRY_BUDGET_SECONDS` and `REVIEW_CALL_TIMEOUT_SECONDS` like every
-   other call.
+   unparseable is never nudged again. (The fallback trigger was widened by
+   D-0027: a still-unusable nudge answer now descends to the node's
+   `fallback_model` instead of being returned as the judge's answer, which this
+   entry originally left to the empty-answer tail.) The added call is bounded
+   by `REVIEW_RETRY_BUDGET_SECONDS` and `REVIEW_CALL_TIMEOUT_SECONDS` like
+   every other call.
 3. **A retry can never manufacture a PASS.** The retried answer goes through
    the same parser as the first one: only a tagged answer with an empty
    `<findings>` block passes, and an answer that is still unreadable ends as
@@ -1452,6 +1453,16 @@ behaviour.
   format with a *correctly shaped* block of its own is structurally identical
   to a verdict, so no deterministic rule separates the two (README's Known
   limitations).
+- 2026-09-26 (issue #75, D-0027): Point 2's "never retried on the fallback
+  model" is superseded. The one same-model retry stands, but a nudge answer
+  that is still unusable is no longer the judge's final answer: it descends to
+  the node's `fallback_model`, which is the knob that exists for "this model
+  did not answer usably". The nudge was re-asking the same model on the same
+  route that had just failed, so a model or provider that systematically
+  ignores the answer contract was not routable around — one node failed seven
+  consecutive executions that way (social-engagement-engine #49). The bound
+  moves from two attempts to three (primary, nudge, fallback) and the fallback
+  answer is final; without a `fallback_model` the behaviour is unchanged.
 
 ### Inspiration & References
 
@@ -1472,4 +1483,120 @@ behaviour.
 - D-0022 — the per-call ceiling and retry budget the added call stays inside.
 - D-0002 — the hidden verdict-block format and the any-non-PASS merge gate,
   both unchanged.
+
+## D-0027 — An unusable judge answer reaches the node's `fallback_model`
+
+- Date: 2026-09-26
+- Status: Accepted
+- Amends: D-0026 (its one-retry rule now has the fallback as its second step)
+
+### Decision
+
+`fallback_model` is the knob for "this model did not answer usably", and the
+ladder now treats **every unusable answer** as that condition:
+
+1. **An unreadable answer reaches the fallback.** The ladder keeps D-0026's
+   one same-model retry — `EMPTY_CONTENT_INSTRUCTION` for an empty answer,
+   `UNPARSEABLE_CONTENT_INSTRUCTION` for a non-empty answer without a readable
+   `<findings>` block — and a nudge that is **still** unusable descends to the
+   node's `fallback_model` instead of being returned as the judge's answer.
+   That tail previously fired on an **empty** answer only, which left a model
+   that systematically ignores the answer contract unroutable.
+2. **A cap-saturated empty answer reaches the fallback too, uniformly.** The
+   first attempt already skipped the same-model nudge when the cap was reached
+   (D-0021); a saturated empty *nudge* answer now takes the fallback path for
+   the same reason. The saturation signal is not consulted on the nudge —
+   the answer is already rejected for being empty, so the prediction that it
+   would repeat adds nothing.
+3. **The fallback answer is final.** It is never nudged, never doubted and
+   never followed by another fallback, so the progression is bounded at three
+   attempts: primary, nudge, fallback. The attempt count — not a model
+   comparison — is the guard, which is why a `fallback_model` equal to `model`
+   (a misconfiguration) cannot loop.
+4. **Without a `fallback_model`, nothing changes.** The unusable body from the
+   primary model is returned as-is and `evaluate_response` maps it to NEEDS
+   REVIEW exactly as before; no error is raised for a consumer that configures
+   no fallback.
+5. **The verdict contract is untouched.** The four verdict states, the hidden
+   verdict block (D-0002) and the any-non-PASS merge gate are unchanged: this
+   entry decides only *who* is asked second. An unreadable answer still never
+   becomes a PASS — the fallback's answer goes through the same parser, and a
+   fallback answer that is unreadable too still ends as NEEDS REVIEW.
+6. **The fallback that fired is visible.** The review body's notice names the
+   unreadable-answer trigger as well as an empty one, the KPI table's Model
+   column carries the model whose response produced the verdict
+   (`extract_usage` reads the answer's own `model`), and the log names the
+   trigger before the fallback call.
+7. **One predicate decides the fallback.** `_is_unusable_content` is the OR of
+   the two shape predicates (`_is_empty_content`, `_is_unparseable_content`)
+   and is what the nudge tail consults. The two shapes keep their own
+   instructions on the primary model, so the retries stay separately
+   diagnosable; they only share the answer to "is the fallback reachable?".
+
+### Rationale
+
+The retry exists because a format-adherence failure is often a sample-level
+accident and re-asking the same question is the cheapest recovery. Its failure
+mode is that a *systematic* format failure is re-asked against the same
+configuration — a predicted repeat. The observed case
+(social-engagement-engine #49) was one node, one model, one commit family,
+seven CI executions, every one auto-routed to the same provider and every one
+returning a complete prose review without the blocks: three calls spent, NEEDS
+REVIEW, merge blocked, no actionable finding, and the consumer's only escape
+was a hand-probed per-node `options.provider.ignore`. An unreadable answer is a
+routing signal the harness already detects, and `fallback_model` is the
+already-existing answer to it; leaving that knob reachable only from the
+empty-content tail is what the evidence falsifies.
+
+The bound is what makes this safe rather than an invitation to model
+ping-pong: one nudge, one fallback, then report. Two alternatives were
+considered and rejected:
+
+- **Nudging the fallback model as well** (primary → nudge → fallback → nudge)
+  doubles the worst-case call count for a case where the evidence says the
+  nudge does not help — the observed nudge was ignored by the very model that
+  ignored the contract — and it would make "how many calls may one judge
+  spend" depend on the answer's shape. The fallback is a different model, not
+  a second sample of the same one; if it is unreadable too, the honest report
+  is NEEDS REVIEW.
+- **Making the trigger provider-conditional** (e.g. fall back only when the
+  answer's serving `provider` is the one that failed before) would put
+  per-call provider-tracking state into a policy that is otherwise a pure
+  function of the config, and would make the trigger unpredictable from the
+  config. The condition the config can express — "the configured model did not
+  answer usably" — is the one that stays.
+
+### Consequences
+
+- A judge run that would have ended at two calls now spends a third whenever a
+  fallback is configured and the primary stayed unusable after its nudge. The
+  outer bounds are unchanged: `REVIEW_RETRY_BUDGET_SECONDS` and
+  `REVIEW_CALL_TIMEOUT_SECONDS` bound every attempt, the fallback is one of the
+  three, and it is never issued twice.
+- `used_fallback` / `final_model` become true in more cases, so the body's
+  fallback notice and the KPI Model column report the model that actually
+  produced the verdict more often than before. A body that reports a fallback
+  is no longer necessarily a body that saw an *empty* answer.
+- A body whose judge carried an unreadable answer on both models still reports
+  NEEDS REVIEW with the unparseable reason — the new step changes routing, not
+  reporting.
+- `_is_unusable_content` joins the shape predicates as part of the ladder's
+  consulted surface; it is behaviourally tested through `_run_layered_retry`
+  and the package-surface contract test.
+
+### Inspiration & References
+
+- Issue #75 — the problem statement, the evidence (one node stuck across six
+  executions; the local probe returning empty content at 32,768 and 8,192
+  completion tokens), and the constraints and edge cases this entry resolves.
+- D-0026 / issue #70 — the one-retry rule this entry extends; the same-model
+  retry it introduces is exactly the step the evidence shows cannot succeed.
+- D-0021 — the completion cap and its cap-saturation fallback trigger, which
+  this entry makes uniform across attempts.
+- D-0022 — the per-call ceiling and retry budget every attempt stays inside.
+- ADR-0021 — the fallback call's shape (`routing=None`, `options=None`,
+  `temperature=0.0`) and the `used_fallback` / `final_model` reporting
+  contract, both unchanged.
+- social-engagement-engine #49 — the consumer-side record, including the
+  `options.provider.ignore` workaround this entry is meant to replace.
 
