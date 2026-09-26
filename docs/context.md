@@ -20,6 +20,11 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   prose about the format, not a verdict), an answer without a readable block
   is retried once and then reported as unparseable rather than read as a
   pass, and an empty block is a legitimate pass (D-0026).
+  An answer that is still unusable after that retry — unreadable, or empty —
+  is asked of the node's `fallback_model` when one is configured, and a
+  fallback answer that is unreadable too is reported the same way; the
+  fallback attempt is final, so the ladder spends at most three calls, and a
+  node without a `fallback_model` keeps the retry-only behaviour (D-0027).
   When that submission is refused, the body is persisted, dumped to the job
   log and uploaded as a failure-path artifact instead of being discarded
   (D-0024).

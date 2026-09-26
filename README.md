@@ -421,6 +421,16 @@ Node names are fixed by the toolkit: `syntax_lint`, `test_coverage`,
 Environment overrides (highest precedence): `SECURITY_MODEL` (per-node) >
 `AGENT_MODEL` (global) > `factory.json` > toolkit default.
 
+**Fallback model** — `fallback_model` (per node, optional) is asked when the
+configured `model` did not answer usably: its API retries were exhausted, its
+answer was empty (including a cap-saturating one, which skips the retry), or
+its answer was still unreadable after the one retry the answer contract gives
+it. The fallback call carries the node's `max_tokens` but not its `routing`,
+`options` or `temperature`; its answer is final and goes through the same
+parser, so a fallback can never turn an unreadable answer into a PASS. When it
+answers, the review body says so and the KPI table's Model column names it.
+See D-0027.
+
 **Nested judge sections** — consumers whose `factory.json` also holds
 non-judge sections (e.g. an orchestrator config) may nest the four judge
 nodes under a section instead of the top level:
@@ -465,8 +475,9 @@ output ceiling (observed: 131,072 tokens over ~23 min, empty content):
 - An **empty** response that reached the cap skips the same-model nudge and
   goes straight to the fallback model (when one is configured): the
   cap-saturating empty generation *is* the pathology, so re-asking the same
-  route is predicted to repeat it. A capped-but-non-empty response still
-  evaluates normally, so truncation never silently corrupts a verdict.
+  route is predicted to repeat it. A retry that is still empty takes the
+  fallback path too (D-0027). A capped-but-non-empty response still evaluates
+  normally, so truncation never silently corrupts a verdict.
 
 See D-0021.
 
@@ -532,14 +543,25 @@ the gate can do with it:
   declares no findings *and* no pass: it is prose the judge wrote inside the
   tags, not a verdict, so it cannot pass on an empty parse (D-0026).
 - An answer whose block is **missing or unreadable** is retried **once** with
-  an instruction naming the block, and an answer that is still unreadable
-  leaves the judge NEEDS REVIEW. The retry is issued once per judge call and
-  is bounded by `REVIEW_RETRY_BUDGET_SECONDS` like every other call (D-0026).
+  an instruction naming the block. A retry that is *still* unreadable is asked
+  of the node's **fallback model** (when one is configured) rather than
+  returned — an answer the engine cannot read is exactly the condition
+  `fallback_model` exists for — and an answer that is unreadable on the
+  fallback too leaves the judge NEEDS REVIEW. The retry and the fallback are
+  each issued at most **once** per judge call, so the ladder spends at most
+  three calls, all bounded by `REVIEW_RETRY_BUDGET_SECONDS` (D-0026, D-0027).
+  A consumer with no `fallback_model` configured keeps the retry-only
+  behaviour, unchanged and without error.
 - A **finding written beside an explanatory sentence keeps failing** the
   answer with that finding: the rule is readability, not strict per-line
   format, so an unreadable line never discards a readable finding (D-0026).
 - An **empty response** keeps its own path: one retry with an explicit
-  instruction, then the fallback model when one is configured.
+  instruction, then the fallback model when one is configured. A retry that is
+  still empty reaches the fallback for the same reason an unreadable one does.
+- When the fallback answered, the review body says so and names the model that
+  produced the verdict, and the KPI table's **Model** column reports that
+  model — so *the roster's model answered* and *the fallback rescued it* are
+  distinguishable from the body alone (D-0027).
 - The three ways a judge can end up with no verdict are reported distinctly:
   `Check failed to run: …` (the check raised), *Judge answer was not
   parseable (no readable `<findings>` block).* (the answer's shape), and
@@ -717,11 +739,13 @@ Two loud-fail paths to expect:
   `<findings>` block)"** — that node's model answered without a readable
   block its prompt requires: either the block is missing, or what it put
   inside the tags carries no JSON finding (prose, or a block it only
-  *mentioned* in a sentence). The one retry did not fix it. Nothing is wrong
-  with the diff: re-run the job (the answer is a per-call sample) or change
-  that node's model/provider in the judge config, since format adherence is
-  model- and provider-specific (D-0026). The full answer is in the judge's
-  reasoning block.
+  *mentioned* in a sentence). The one retry did not fix it, and either the
+  node has no `fallback_model` configured or the fallback answered unreadably
+  too. Nothing is wrong with the diff: re-run the job (the answer is a
+  per-call sample) or change that node's model/provider in the judge config,
+  since format adherence is model- and provider-specific (D-0026, D-0027). The
+  full answer, and which model produced it, is in the judge's reasoning block
+  and the body's fallback notice.
 - **Review job red and no review was posted at all** — the submission was
   refused (a token that cannot review, a repository policy, a PR that
   vanished). The verdicts are not lost: the job log carries the full body,

@@ -949,6 +949,20 @@ def _is_cap_saturated(raw_response: str, max_tokens: int | None) -> bool:
     return completion_tokens is not None and completion_tokens >= max_tokens
 
 
+def _is_unusable_content(raw_response: str) -> bool:
+    """Whether an answer is unusable as a verdict, under either shape.
+
+    Two failures make an answer unusable and both mean the same thing to the
+    ladder — "this model did not answer usably", the condition
+    ``fallback_model`` exists for: EMPTY content (``_is_empty_content``) and
+    non-empty content the engine cannot read a verdict from, i.e. without a
+    readable ``<findings>`` block (``_is_unparseable_content``). The two
+    differ in *how* they are retried on the primary model — each has its own
+    instruction — not in whether the fallback model is reachable (D-0027).
+    """
+    return _is_empty_content(raw_response) or _is_unparseable_content(raw_response)
+
+
 def _run_layered_retry(
     judge_key,
     model,
@@ -964,7 +978,7 @@ def _run_layered_retry(
     """Execute the layered API-error + unusable-content retry/fallback policy
     (ADR-0021, amended 2026-08-31; completion cap added by D-0021;
     per-call wall-clock ceiling added by D-0022; unparseable answers added by
-    D-0026).
+    D-0026; the fallback trigger widened to every unusable answer by D-0027).
 
     Wraps the single-call transport (``_call_with_api_retry``) with the
     API-error fallback trigger and the unusable-content quality checks, kept
@@ -985,15 +999,23 @@ def _run_layered_retry(
            response is the degenerate generation itself, so re-asking the
            same route is predicted to repeat it; (2) is skipped and the
            ladder goes straight to (3). A nudge that is itself unusable is
-           never nudged again.
+           never nudged again - it descends to (3) when a fallback is
+           configured, and is returned as the judge's answer when none is.
         3. Fallback model, original prompt, routing=None, options=None,
            temperature=0.0, ``max_tokens`` unchanged - fired when the primary
            exhausted its API-error retries (429/5xx/timeouts and calls
            abandoned at the per-call ceiling, from (1) or (2)), when (1)
-           saturated the cap with empty content, or when (2) is EMPTY and a
-           fallback_model is set. The trigger is an empty answer, so a
-           still-unparseable answer is never retried on the fallback: it is
-           returned as-is and ``evaluate_response`` maps it to NEEDS REVIEW.
+           saturated the cap with empty content, or when (2) is unusable
+           (``_is_unusable_content``: empty OR without a readable
+           ``<findings>`` block). An answer the engine cannot read is the
+           same condition ``fallback_model`` exists for ("this model did not
+           answer usably"), so the nudge is not the last word (D-0027).
+           The fallback answer itself is final: it is never nudged and never
+           falls back again, which is what bounds the progression at three
+           attempts - the configured maximum. Without a ``fallback_model``
+           the body from (1)/(2) is returned as-is and
+           ``evaluate_response`` maps it to NEEDS REVIEW, which is the
+           pre-D-0027 behaviour for a consumer that configures no fallback.
            Note that a *survivable* timeout does not reach this step: the
            retry re-routes the same model (D-0022).
         4. Give up: an unusable body is returned and mapped to ``NEEDS
@@ -1129,7 +1151,23 @@ def _run_layered_retry(
             return response_body, True, fallback_model, attempt_count
         attempt_count = 2
 
-        if _is_empty_content(response_body) and fallback_model:
+        # A nudge that is still unusable is exactly the condition the
+        # fallback model exists for - this model did not answer usably - so
+        # an answer the engine cannot read descends the ladder instead of
+        # becoming the judge's final answer (D-0027, extending D-0026's
+        # one-retry rule to the fallback the retry could not reach). The
+        # fallback answer is final: never nudged, never doubted, which is
+        # what bounds the progression at three attempts.
+        if fallback_model and _is_unusable_content(response_body):
+            unusable_reason = (
+                "empty"
+                if _is_empty_content(response_body)
+                else "no readable <findings> block"
+            )
+            log(
+                f"[WARN] Judge {judge_key}: nudge answer is unusable "
+                f"({unusable_reason}); falling back to model {fallback_model}"
+            )
             response_body, attempt_count = _run_fallback(3)
             return response_body, True, fallback_model, attempt_count
 
@@ -2294,7 +2332,8 @@ def build_review_body(judges_data: dict) -> str:
             report_lines.append(
                 f"\n> ⚠️ **Fallback Model Used**: This verdict was produced by "
                 f"`{info.get('final_model', 'unknown')}` after the primary model "
-                f"failed or returned empty responses."
+                f"failed or returned an unusable answer (empty, or without a "
+                f"readable `<findings>` block)."
             )
 
         if info["findings"]:

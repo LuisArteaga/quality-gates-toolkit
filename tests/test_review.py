@@ -1150,6 +1150,42 @@ class UnparseableContentHelperTests(unittest.TestCase):
         self.assertFalse(review._is_unparseable_content(self._response("  \n  ")))
 
 
+class UnusableContentHelperTests(unittest.TestCase):
+    """``_is_unusable_content``: the single predicate the retry ladder consults
+    to decide whether the fallback model is reachable (issue #75, D-0027). It
+    is the OR of the two shape predicates — "no answer" and "an answer the
+    engine cannot read" are the same condition for routing purposes, while
+    still getting different nudges on the primary model."""
+
+    def _response(self, content: str) -> str:
+        return json.dumps({"choices": [{"message": {"content": content}}]})
+
+    def test_no_content_is_unusable(self):
+        self.assertTrue(review._is_unusable_content(self._response("")))
+        self.assertTrue(review._is_unusable_content(self._response("  \n  ")))
+
+    def test_answer_without_a_readable_block_is_unusable(self):
+        self.assertTrue(review._is_unusable_content(self._response("a prose review")))
+        self.assertTrue(
+            review._is_unusable_content(self._response("<reasoning>r</reasoning>"))
+        )
+        self.assertTrue(
+            review._is_unusable_content(
+                self._response("<findings>\nnothing to report\n</findings>")
+            )
+        )
+
+    def test_answer_with_a_readable_block_is_usable(self):
+        self.assertFalse(
+            review._is_unusable_content(self._response("<findings></findings>"))
+        )
+        self.assertFalse(
+            review._is_unusable_content(
+                self._response('<findings>\n{"severity": "bug"}\n</findings>')
+            )
+        )
+
+
 class AggregateVerdictsTests(unittest.TestCase):
     """``_aggregate_verdicts`` folds per-chunk judge results into one verdict.
 
@@ -1396,6 +1432,53 @@ class CallLlmForReviewTests(unittest.TestCase):
         self.assertIsNone(third_call.args[5])  # options
         self.assertEqual(third_call.args[4], 0.0)  # temperature
 
+    @patch("review._call_with_api_retry")
+    @patch("review.resolve_model_config")
+    @patch("review.get_tracer")
+    def test_unparseable_answer_reports_the_fallback_that_answered(
+        self, mock_tracer, mock_cfg, mock_retry
+    ):
+        """AC (issue #75): the fallback that rescued an unreadable answer is
+        visible as such — `used_fallback` names the fallback as the model that
+        produced the verdict, and the usage model the KPI table renders is the
+        fallback's, so a consumer can tell "the roster's model answered" from
+        "the fallback rescued it"."""
+        from telemetry import DummyTracer
+
+        mock_tracer.return_value = DummyTracer()
+        mock_cfg.return_value = {
+            "model": "primary-model",
+            "routing": ["Together"],
+            "temperature": 0.0,
+            "options": None,
+            "fallback_model": "fallback-model",
+        }
+        prose = self._build_response("Approve the direction.")
+        good = json.dumps(
+            {
+                "model": "fallback-model",
+                "choices": [
+                    {
+                        "message": {
+                            "content": "<reasoning>r</reasoning><findings></findings>"
+                        }
+                    }
+                ],
+                "usage": {"completion_tokens": 12},
+            }
+        )
+        mock_retry.side_effect = [prose, prose, good]
+
+        body, metadata = review.call_llm_for_review(
+            "architecture", "sys prompt", "diff", "key"
+        )
+        self.assertEqual(body, good)
+        self.assertTrue(metadata["used_fallback"])
+        self.assertEqual(metadata["final_model"], "fallback-model")
+        self.assertEqual(metadata["attempt_count"], 3)
+        self.assertEqual(metadata["usage"]["model"], "fallback-model")
+        self.assertEqual(mock_retry.call_args_list[2].args[0], "fallback-model")
+
 
 class FallbackIndicatorTests(unittest.TestCase):
     def test_fallback_indicator_shown_when_used(self):
@@ -1416,6 +1499,24 @@ class FallbackIndicatorTests(unittest.TestCase):
         data = _build_judges_data(statuses)
         body = review.build_review_body(data)
         self.assertNotIn("Fallback Model Used", body)
+
+    def test_fallback_notice_names_the_unreadable_answer_trigger(self):
+        """AC (issue #75): the notice names the fallback model AND says the
+        answer was unusable — not only empty — so the body distinguishes
+        "the roster's model answered" from "the fallback rescued an answer
+        the engine could not read"."""
+        statuses = {k: "PASS" for k in review.JUDGE_KEYS}
+        data = _build_judges_data(
+            statuses,
+            fallbacks={"architecture": True},
+            final_models={"architecture": "z-ai/glm-5.3-flash"},
+        )
+        body = review.build_review_body(data)
+        self.assertIn("**Fallback Model Used**", body)
+        self.assertIn("z-ai/glm-5.3-flash", body)
+        self.assertIn("unusable answer", body)
+        # The notice is scoped to the judge that fell back, not the whole body.
+        self.assertEqual(body.count("Fallback Model Used"), 1)
 
     def test_fallback_indicator_only_for_specific_judge(self):
         """AC: only the judge that used fallback shows the indicator."""
@@ -2036,11 +2137,51 @@ class LayeredRetryPolicyTests(unittest.TestCase):
         self.assertEqual(mock_retry.call_count, 2)
 
     @patch("review._call_with_api_retry")
-    def test_unparseable_twice_gets_exactly_one_extra_call(self, mock_retry):
-        """AC (issue #70): the retry is issued once and never again. A still
-        unparseable answer is returned as-is — evaluate_response maps it to
-        NEEDS REVIEW — and it is not re-nudged nor retried on the fallback
-        model, even though one is configured."""
+    def test_unparseable_nudge_descends_to_the_fallback(self, mock_retry):
+        """AC (issue #75): the nudge stays the first step, and a nudge that is
+        STILL unparseable reaches the node's `fallback_model` — an answer the
+        engine cannot read is the same condition `fallback_model` exists for.
+        The fallback's parseable verdict is the judge's verdict."""
+        first = self._build_response("Approve the direction.")
+        second = self._build_response("<reasoning>Still approve.</reasoning>")
+        fallback = self._build_response(
+            '<findings>\n{"severity": "bug", "message": "x"}\n</findings>'
+        )
+        mock_retry.side_effect = [first, second, fallback]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "architecture",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+        )
+        self.assertEqual(body, fallback)
+        self.assertTrue(used_fb)
+        self.assertEqual(final_m, "fallback")
+        self.assertEqual(attempts, 3)
+        self.assertEqual(mock_retry.call_count, 3)
+        # The verdict is read from the fallback's answer by the same parser.
+        verdict, _, findings = review.evaluate_response(body)
+        self.assertEqual(verdict, "Fail")
+        self.assertEqual(len(findings), 1)
+        # The fallback call keeps ADR-0021's shape and the ORIGINAL prompt.
+        third = mock_retry.call_args_list[2]
+        self.assertEqual(third.args[0], "fallback")  # model
+        self.assertIsNone(third.args[3])  # routing
+        self.assertEqual(third.args[4], 0.0)  # temperature
+        self.assertIsNone(third.args[5])  # options
+        self.assertEqual(third.args[1][1]["content"], "diff")
+
+    @patch("review._call_with_api_retry")
+    def test_unparseable_without_fallback_keeps_todays_behaviour(self, mock_retry):
+        """AC (issue #75): a consumer with no `fallback_model` gets exactly
+        today's treatment — one nudge, then the answer as it stands. No error
+        is raised and no third call is issued (the mock's side_effect list is
+        exhausted by a fourth call, so the bound is enforced by the test)."""
         first = self._build_response("Approve the direction.")
         second = self._build_response("<reasoning>Still approve.</reasoning>")
         mock_retry.side_effect = [first, second]
@@ -2049,7 +2190,7 @@ class LayeredRetryPolicyTests(unittest.TestCase):
             "architecture",
             "primary",
             self._messages(),
-            "fallback",
+            None,
             "key",
             ["Together"],
             0.0,
@@ -2064,6 +2205,58 @@ class LayeredRetryPolicyTests(unittest.TestCase):
         self.assertEqual(verdict, "Needs Review")
         self.assertEqual(findings, [])
         self.assertIn("no <findings> block", reasoning)
+
+    @patch("review._call_with_api_retry")
+    def test_unparseable_fallback_answer_is_final(self, mock_retry):
+        """AC (issue #75): when the fallback answers unparseably too the ladder
+        stops — the fallback is never nudged and never falls back again — so
+        the run ends at three attempts with NEEDS REVIEW instead of an
+        unbounded model ping-pong."""
+        prose = self._build_response("Approve the direction.")
+        mock_retry.side_effect = [prose, prose, prose]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "architecture",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+        )
+        self.assertEqual(body, prose)
+        self.assertTrue(used_fb)
+        self.assertEqual(final_m, "fallback")
+        self.assertEqual(attempts, 3)
+        self.assertEqual(mock_retry.call_count, 3)
+        verdict, _, findings = review.evaluate_response(body)
+        self.assertEqual(verdict, "Needs Review")
+        self.assertEqual(findings, [])
+
+    @patch("review._call_with_api_retry")
+    def test_fallback_equal_to_the_primary_model_does_not_loop(self, mock_retry):
+        """Edge case (issue #75): `fallback_model` equal to `model` is a
+        misconfiguration, not a loop — the same model is asked again exactly
+        once and the attempt count ends the progression."""
+        prose = self._build_response("Approve the direction.")
+        mock_retry.side_effect = [prose, prose, prose]
+
+        _, used_fb, final_m, attempts = review._run_layered_retry(
+            "architecture",
+            "primary-model",
+            self._messages(),
+            "primary-model",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+        )
+        self.assertEqual(attempts, 3)
+        self.assertEqual(mock_retry.call_count, 3)
+        self.assertTrue(used_fb)
+        self.assertEqual(final_m, "primary-model")
+        self.assertEqual(mock_retry.call_args_list[2].args[0], "primary-model")
 
     @patch("review._call_with_api_retry")
     def test_answer_with_findings_but_no_reasoning_is_not_retried(self, mock_retry):
@@ -2234,6 +2427,42 @@ class LayeredRetryPolicyTests(unittest.TestCase):
         self.assertEqual(
             nudge_messages[1]["content"], "diff" + review.EMPTY_CONTENT_INSTRUCTION
         )
+
+    @patch("review._call_with_api_retry")
+    def test_cap_saturated_nudge_reaches_the_fallback(self, mock_retry):
+        """AC (issue #75): a cap-saturated EMPTY answer reaches the fallback
+        path rather than only the same-model nudge — here on the second call,
+        where the saturation signal is not consulted (empty is already the
+        unusable shape) and the fallback is issued instead of a second nudge."""
+        below_cap = self._response_with_completion_tokens("", 12000)
+        saturated = self._response_with_completion_tokens("", 32768)
+        good = self._build_response("<reasoning>r</reasoning><findings></findings>")
+        mock_retry.side_effect = [below_cap, saturated, good]
+
+        body, used_fb, final_m, attempts = review._run_layered_retry(
+            "syntax_lint",
+            "primary",
+            self._messages(),
+            "fallback",
+            "key",
+            ["Together"],
+            0.0,
+            None,
+            32768,
+        )
+        self.assertEqual(body, good)
+        self.assertTrue(used_fb)
+        self.assertEqual(final_m, "fallback")
+        self.assertEqual(attempts, 3)
+        self.assertEqual(mock_retry.call_count, 3)
+        # The second call was the primary-model nudge, the third the fallback.
+        self.assertEqual(mock_retry.call_args_list[1].args[0], "primary")
+        self.assertEqual(
+            mock_retry.call_args_list[1].args[1][1]["content"],
+            "diff" + review.EMPTY_CONTENT_INSTRUCTION,
+        )
+        self.assertEqual(mock_retry.call_args_list[2].args[0], "fallback")
+        self.assertEqual(mock_retry.call_args_list[2].args[1][1]["content"], "diff")
 
     @patch("review._call_with_api_retry")
     def test_capped_but_non_empty_response_is_not_a_saturation(self, mock_retry):
