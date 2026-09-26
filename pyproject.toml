@@ -16,7 +16,11 @@ name = "quality-gates-toolkit"
 # 1.8.6 carries the judge answer shape contract: an answer without the
 # <findings> block is no longer read as a pass, and an unreadable answer
 # is retried once (D-0026, PR #71).
-version = "1.8.6"
+# 1.8.7 carries the presented-and-readable findings block contract: a
+# block merely mentioned in prose, or one carrying no readable finding,
+# is unparseable; a compact answer stays a verdict (D-0026 amendment,
+# PR #76).
+version = "1.8.7"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
