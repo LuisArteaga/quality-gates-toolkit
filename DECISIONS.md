@@ -1326,15 +1326,18 @@ None.
 The judge **response contract** is the `<findings>` block, and an answer
 without it is not a verdict:
 
-1. **The required shape is the `<findings>` block.** An answer whose block is
-   **missing** is unparseable: it declares no findings *and* no pass, so
-   `evaluate_response` reports it as NEEDS REVIEW instead of deriving a PASS
+1. **The required shape is a readable `<findings>` block.** An answer whose
+   block is **missing** is unparseable: it declares no findings *and* no pass,
+   so `evaluate_response` reports it as NEEDS REVIEW instead of deriving a PASS
    from the absence of parsed findings. An answer that carries the block but
    leaves it **empty** is a legitimate PASS and stays one — under D-0023's
    promotion threshold, "no finding" is what a pass looks like. A `<reasoning>`
    block is not required for a verdict to be read (a findings-only answer is
    still a verdict); it is required only in the sense that an answer with
-   neither tag is unparseable too.
+   neither tag is unparseable too. The 2026-09-26 amendment below adds what
+   "carries" means: *presents the block as a block*, and with content the
+   engine can read a finding from — a block merely mentioned in prose, or a
+   non-empty block carrying no finding, is unparseable just like a missing one.
 2. **One retry, on the same model.** A non-empty unparseable answer gets the
    treatment the empty answer already gets: exactly one more call to the
    primary model with an instruction appended to the last (user) turn. The
@@ -1355,8 +1358,8 @@ without it is not a verdict:
 4. **The three "no verdict" reasons stay distinguishable in the review body.**
    A judge with no verdict can have crashed (`error` → `Check failed to run:
    …`), answered in a form the engine cannot read (unparseable → `Judge answer
-   was not parseable (no `<findings>` block).`), or produced nothing the
-   pipeline could use (the existing `Insufficient context.` catch-all). The
+   was not parseable (no readable `<findings>` block).`), or produced nothing
+   the pipeline could use (the existing `Insufficient context.` catch-all). The
    unparseable case is reported as its own field on the judge result rather
    than folded into `error`, because the judge did run — what has to change is
    the answer's shape, and saying "insufficient context" sends the author
@@ -1407,7 +1410,48 @@ behaviour.
 
 ### Amendments
 
-None.
+- 2026-09-26 (issue #72): The residual hole named above is closed — a block is
+  read only when it is **presented as a block**, and its content has to be
+  **readable**. Two rules, both about what the answer *emits* rather than about
+  what it mentions:
+  1. **A block boundary, not a substring.** The `<findings>` open tag has to
+     stand at the start of the content, at the start of a line, or immediately
+     after another tag — never inside running prose. The prompts print the tag
+     that way in their OUTPUT FORMAT section, so a tag inside a sentence (or
+     inside backticks) is the judge *describing* the format. Both directions
+     the issue records are closed by this rule: a quoted empty block no longer
+     passes, and a quoted JSON example no longer fails. The rule is
+     deliberately not line-anchoring alone: real answers compact both blocks
+     onto one line (`</reasoning><findings></findings>`), and the tag's
+     predecessor — not its own anchor — is what tells a block from a mention.
+  2. **Readability, not strict line format.** A presented block is readable
+     when it is empty (the passing answer, D-0023) or yields at least one
+     finding. A block that is present, non-empty and yields nothing is prose
+     inside the tags and is unparseable, which closes the third silent-PASS
+     direction the issue records (a malformed JSON line alone used to pass).
+     This is where the rationale above is answered rather than overruled: the
+     "sloppy but usable" block — one JSON finding plus an explanatory sentence
+     — still parses, still fails the answer, and still reports its finding. A
+     strict per-line check would have traded that actionable finding for a
+     vaguer NEEDS REVIEW, and readability is also the honest version of the
+     D-0026 question ("can a verdict be read from this answer?").
+  Consequences carried in the same change: `_has_findings_block` is replaced
+  by `_extract_findings_block` (which distinguishes absent — `None` — from
+  present-but-empty — `""`, the distinction the rationale above says
+  `parse_xml_tags` cannot express) plus `_read_verdict_block` /
+  `_verdict_is_readable`, which the parser and the retry predicate share so
+  the two cannot drift; the retry's instruction
+  (`UNPARSEABLE_CONTENT_INSTRUCTION`) now names the readable form rather than a
+  missing block; the review body's label reads *Judge answer was not parseable
+  (no readable `<findings>` block).*; and an answer that contains the tags only
+  inside prose gets its own reason line, because telling its author the tags
+  are "missing" sends them looking for tags that are visibly there. The
+  extraction for `<reasoning>` is untouched: that block is delivered as prose
+  and nothing is parsed out of it, so a quoted `<reasoning>` tag cannot
+  fabricate a verdict. Left open and recorded: a judge that illustrates the
+  format with a *correctly shaped* block of its own is structurally identical
+  to a verdict, so no deterministic rule separates the two (README's Known
+  limitations).
 
 ### Inspiration & References
 

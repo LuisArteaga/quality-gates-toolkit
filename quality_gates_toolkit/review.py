@@ -275,8 +275,10 @@ EMPTY_CONTENT_INSTRUCTION = (
 # telling it the answer was "empty" would misdescribe what it has to fix
 # (issue #70). The operative sentence — name the tags — is the same.
 UNPARSEABLE_CONTENT_INSTRUCTION = (
-    "\n\nYour previous response did not include the required <findings> "
-    "block. Please provide a verdict with <reasoning> and <findings> tags."
+    "\n\nYour previous response did not carry a readable <findings> block. "
+    "Please provide a verdict with <reasoning> and a <findings> block on its "
+    "own lines, holding one JSON object per finding (or empty when there is "
+    "no finding)."
 )
 
 
@@ -909,14 +911,15 @@ def _is_empty_content(raw_response: str) -> bool:
 
 
 def _is_unparseable_content(raw_response: str) -> bool:
-    """Whether a non-empty answer carries no ``<findings>`` block.
+    """Whether a non-empty answer carries no readable ``<findings>`` block.
 
     Every judge prompt asks for a ``<findings>`` block on every answer, and
     an EMPTY block is the normal passing answer (D-0023's promotion
     threshold means "no finding" is what a pass looks like). An answer that
-    never opened the block declares no findings *and* no pass, so no verdict
-    can be read from it — the parser would otherwise fall through to PASS on
-    a prose answer (D-0026).
+    presents no block, or presents one the engine cannot read a finding
+    from, declares no findings *and* no pass, so no verdict can be read from
+    it — the parser would otherwise fall through to PASS on a prose answer
+    (D-0026, extended by issue #72).
 
     Empty content is a different failure mode and is NOT this one: it is
     reported by ``_is_empty_content`` and has its own instruction.
@@ -925,7 +928,8 @@ def _is_unparseable_content(raw_response: str) -> bool:
     content = data["choices"][0]["message"]["content"]
     if not content or not content.strip():
         return False
-    return not _has_findings_block(content)
+    block, findings = _read_verdict_block(content)
+    return not _verdict_is_readable(block, findings)
 
 
 def _is_cap_saturated(raw_response: str, max_tokens: int | None) -> bool:
@@ -974,8 +978,8 @@ def _run_layered_retry(
         1. Primary model, original prompt.
         2. Primary model, explicit-instruction nudge - issued at most ONCE,
            when (1) is unusable: empty (``_is_empty_content``, with
-           ``EMPTY_CONTENT_INSTRUCTION``) or non-empty without the
-           ``<findings>`` block the prompt requires
+           ``EMPTY_CONTENT_INSTRUCTION``) or non-empty without a readable
+           ``<findings>`` block
            (``_is_unparseable_content``, with
            ``UNPARSEABLE_CONTENT_INSTRUCTION``). A cap-saturating empty
            response is the degenerate generation itself, so re-asking the
@@ -1085,12 +1089,13 @@ def _run_layered_retry(
         nudge_instruction = EMPTY_CONTENT_INSTRUCTION
     elif _is_unparseable_content(response_body):
         # The model answered, but in a form the engine cannot read a verdict
-        # from: it never opened the <findings> block its prompt requires, so
-        # evaluate_response would otherwise read the answer as PASS (D-0026).
-        # Re-ask once, naming the missing block.
+        # from: no <findings> block was presented, or the one presented
+        # carries no readable finding, so evaluate_response would otherwise
+        # read the answer as PASS (D-0026, issue #72). Re-ask once, naming
+        # the block the answer has to carry.
         log(
-            f"[WARN] Judge {judge_key}: answer carries no <findings> block, "
-            f"retrying with explicit instruction"
+            f"[WARN] Judge {judge_key}: answer carries no readable <findings> "
+            f"block, retrying with explicit instruction"
         )
         nudge_instruction = UNPARSEABLE_CONTENT_INSTRUCTION
 
@@ -1141,8 +1146,8 @@ def call_llm_for_review(judge_key, system_prompt, diff, api_key):
         factory (``resolve_model_config``); config is runtime data, not
         interleaved with the call mechanism.
       - **Retry/fallback policy** - delegated to ``_run_layered_retry``, which
-        owns the unusable-content checks (empty, and unparseable answers that
-        never opened the ``<findings>`` block) and the model fallback
+        owns the unusable-content checks (empty, and unparseable answers
+        without a readable ``<findings>`` block) and the model fallback
         progression. Kept free of telemetry so it is unit-testable in
         isolation.
       - **Telemetry** - one ``openrouter_chat_completion`` span with input,
@@ -1338,15 +1343,103 @@ def parse_xml_tags(text: str, open_tag: str, close_tag: str) -> str:
     return block.strip()
 
 
-def _has_findings_block(content: str) -> bool:
-    """Whether the answer opened the ``<findings>`` block its prompt requires.
+# A verdict block's open tag has to stand at a BLOCK BOUNDARY to count as a
+# block: the start of a line, or immediately after another tag. A judge that
+# writes `<findings>` inside a sentence is talking ABOUT the format instead
+# of emitting it — and a judge that compacts both blocks onto one line
+# (`</reasoning><findings>`) is still emitting it, which is why the tag's
+# predecessor, not its own line anchor alone, decides (issue #72).
+_FINDINGS_OPEN_TAG_RE = re.compile(r"(?:^[ \t]*|>)[ \t]*<findings>", re.MULTILINE)
 
-    Presence only — the block's *content* is not inspected here. An empty
-    block is a legitimate answer (D-0023), and ``parse_xml_tags`` cannot tell
-    an absent block from an empty one (both yield ``""``), so the required
-    shape has to be checked against the raw answer.
+
+def _extract_findings_block(content: str) -> str | None:
+    """Extract the verdict block's inner text, or ``None`` when the answer
+    presents no verdict block at all.
+
+    "Presents" is structural: the ``<findings>`` open tag has to stand at a
+    block boundary — the start of the content, the start of a line, or
+    immediately after another tag — never inside running prose. Prose that
+    merely *quotes* the block is not a verdict, and reading its quoted
+    content as one fabricated a verdict in both directions: a quoted EMPTY
+    block passed with nothing parsed, and a quoted JSON example failed on
+    the illustration (issue #72).
+
+    The LAST presented block wins, matching the prompt's ordering (reasoning
+    first, then the findings block), so an answer that illustrates the format
+    before stating its verdict is still read from its verdict.
+
+    Unlike ``parse_xml_tags`` this distinguishes an ABSENT block (``None``)
+    from a present-but-empty one (``""``) — the distinction D-0026 needs, and
+    the reason the extraction cannot be reused from the shared helper.
     """
-    return "<findings>" in content
+    matches = list(_FINDINGS_OPEN_TAG_RE.finditer(content))
+    if not matches:
+        return None
+    block = content[matches[-1].end() :]
+    close_idx = block.find("</findings>")
+    if close_idx != -1:
+        return block[:close_idx].strip()
+    return block.strip()
+
+
+def _parse_findings_block(findings_block: str) -> list[str]:
+    """Parse the block's line-delimited JSON findings into ``severity|message``
+    entries.
+
+    Unreadable lines are skipped, so an explanation written beside a finding
+    does not discard it: the prompt asks for one JSON object per line, and a
+    sloppy-but-usable block still yields the finding it carries. A block that
+    is present, non-empty and yields nothing is not a verdict block at all —
+    ``_verdict_is_readable`` reports that, so it can never pass silently.
+    """
+    findings_list = []
+    for line in findings_block.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            f = json.loads(line, strict=False)
+            if not isinstance(f, dict):
+                continue
+            sev = f.get("severity", "bug").lower()
+            msg = f.get("message", "").replace("\n", " ")
+            # Any parsed finding fails the verdict. What may be promoted into
+            # <findings> is decided by the judge prompt's finding threshold
+            # (D-0023); the severity label stays descriptive and the verdict
+            # block carries no severity semantics (D-0002).
+            findings_list.append(f"{sev}|{msg}")
+        except Exception:
+            continue
+    return findings_list
+
+
+def _read_verdict_block(content: str) -> tuple[str | None, list[str]]:
+    """Read the answer's verdict block once: ``(block, findings)``.
+
+    ``block`` is ``None`` when the answer presents no block; ``findings`` is
+    empty for an empty block (the passing answer, D-0023) AND for a block
+    that yields no readable finding. ``_verdict_is_readable`` is the single
+    place that tells those apart, so the parser and the retry predicate
+    cannot drift apart.
+    """
+    block = _extract_findings_block(content)
+    if block is None:
+        return None, []
+    return block, _parse_findings_block(block)
+
+
+def _verdict_is_readable(block: str | None, findings: list[str]) -> bool:
+    """Whether a verdict can be read from the answer.
+
+    Readable means a block was presented and is either EMPTY (the normal
+    passing answer, D-0023) or yields at least one finding. A block that is
+    present, non-empty and yields nothing is prose the judge wrote inside
+    the tags — no verdict may be derived from it, in either direction
+    (issue #72).
+    """
+    if block is None:
+        return False
+    return not block or bool(findings)
 
 
 def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
@@ -1355,11 +1448,12 @@ def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
     Returns (verdict, reasoning, findings_list)
     where verdict is 'Pass', 'Fail', or 'Needs Review'.
 
-    A verdict requires the ``<findings>`` block: an answer that never opened
-    it declares no findings and no pass, so it is reported as NEEDS REVIEW
-    instead of falling through to PASS (D-0026). An answer that carries
-    the block but leaves it empty IS a verdict — an empty block is the normal
-    passing answer under D-0023's promotion threshold.
+    A verdict requires a readable ``<findings>`` block: an answer that never
+    presented one declares no findings and no pass, so it is reported as
+    NEEDS REVIEW instead of falling through to PASS (D-0026). An answer that
+    presents the block and leaves it empty IS a verdict — an empty block is
+    the normal passing answer under D-0023's promotion threshold — and so is
+    a block carrying at least one finding, even alongside an explanation.
     """
     data = json.loads(raw_response, strict=False)
     content = data["choices"][0]["message"]["content"]
@@ -1368,10 +1462,20 @@ def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
         return "Needs Review", "Empty response from LLM", []
 
     reasoning = parse_xml_tags(content, "<reasoning>", "</reasoning>")
-    findings_block = parse_xml_tags(content, "<findings>", "</findings>")
+    findings_block, findings_list = _read_verdict_block(content)
 
-    # Check for refusal / lack of the required findings block.
-    if not _has_findings_block(content):
+    if findings_block is None:
+        # No verdict block was presented at all (issue #70's hole). An answer
+        # that CONTAINS the tags but only inside prose is a shape of its own:
+        # telling its author the tags are missing would send them looking for
+        # tags that are visibly there (issue #72).
+        if "<findings>" in content:
+            return (
+                "Needs Review",
+                "Response does not present a <findings> block; the tag "
+                "appears only inside prose. Original output:\n" + content,
+                [],
+            )
         if "<reasoning>" in content:
             return (
                 "Needs Review",
@@ -1386,28 +1490,18 @@ def evaluate_response(raw_response: str) -> tuple[str, str, list[str]]:
             [],
         )
 
-    findings_list = []
-    verdict = "Pass"
+    if not _verdict_is_readable(findings_block, findings_list):
+        # The block is present but carries no finding the engine can read, so
+        # it is prose inside the tags rather than a verdict (issue #72). It
+        # must not pass silently and must not fail on the judge's own prose.
+        return (
+            "Needs Review",
+            "Response's <findings> block carries no readable finding. "
+            "Original output:\n" + content,
+            [],
+        )
 
-    for line in findings_block.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            f = json.loads(line, strict=False)
-            if not isinstance(f, dict):
-                continue
-            sev = f.get("severity", "bug").lower()
-            msg = f.get("message", "").replace("\n", " ")
-            findings_list.append(f"{sev}|{msg}")
-            # Any parsed finding fails the verdict. What may be promoted into
-            # <findings> is decided by the judge prompt's finding threshold
-            # (D-0023); the severity label stays descriptive and the verdict
-            # block carries no severity semantics (D-0002).
-            verdict = "Fail"
-        except Exception:
-            continue
-
+    verdict = "Fail" if findings_list else "Pass"
     return verdict, reasoning, findings_list
 
 
@@ -1789,9 +1883,9 @@ def _aggregate_verdicts(
         primary model (worst-case reporting so the Fallback Indicator is
         surfaced when any chunk degraded).
       - error: first error encountered; subsequent errors appear in reasoning.
-      - unparseable: True if any chunk's answer carried no ``<findings>``
-        block (D-0026), so the review body can say why that chunk has no
-        verdict instead of reporting missing context.
+      - unparseable: True if any chunk's answer carried no readable
+        ``<findings>`` block (D-0026), so the review body can say why that
+        chunk has no verdict instead of reporting missing context.
 
     Args:
         chunk_results: list of (status, reasoning, findings, error,
@@ -1916,9 +2010,10 @@ def run_judge(
     On an exception the judge returns 'NEEDS REVIEW' with the error captured.
     used_fallback and final_model are False/None on error paths.
 
-    ``unparseable`` is True when the judge's answer carried no ``<findings>``
-    block, i.e. the engine could not read a verdict from it (D-0026). It
-    is reported separately from ``error`` because the judge DID run: the
+    ``unparseable`` is True when the judge's answer carried no readable
+    ``<findings>`` block, i.e. the engine could not read a verdict from it
+    (D-0026, issue #72). It is reported separately from ``error`` because
+    the judge DID run: the
     review body must say "unparseable answer", not "the check crashed", and
     not the catch-all "insufficient context".
 
@@ -2069,9 +2164,10 @@ def _run_single_chunk(
     On success, the response's usage record is appended to
     ``usage_records`` when a collector list is provided.
 
-    The last element reports whether the answer carried no ``<findings>``
-    block — the engine could read no verdict from it (D-0026). It stays
-    False on the exception path, where ``error`` carries the reason instead.
+    The last element reports whether the answer carried no readable
+    ``<findings>`` block — the engine could read no verdict from it (D-0026,
+    issue #72). It stays False on the exception path, where ``error``
+    carries the reason instead.
     """
     reasoning = ""
     findings: list[str] = []
@@ -2102,9 +2198,9 @@ def _run_single_chunk(
         else:
             status = "NEEDS REVIEW"
             # A NEEDS REVIEW with content the parser could not read a verdict
-            # from (no <findings> block) is reported as such rather than as
-            # missing context: the judge answered, and the answer's SHAPE is
-            # what has to change (D-0026).
+            # from (no readable <findings> block) is reported as such rather
+            # than as missing context: the judge answered, and the answer's
+            # SHAPE is what has to change (D-0026, issue #72).
             unparseable = _is_unparseable_content(raw_resp)
     except Exception as e:
         log(f"[ERR] Judge {judge_key} chunk failed: {e}")
@@ -2169,7 +2265,9 @@ def build_review_body(judges_data: dict) -> str:
             if info.get("error"):
                 details = f"Check failed to run: {info['error']}"
             elif info.get("unparseable"):
-                details = "Judge answer was not parseable (no `<findings>` block)."
+                details = (
+                    "Judge answer was not parseable (no readable `<findings>` block)."
+                )
             else:
                 details = "Insufficient context."
 

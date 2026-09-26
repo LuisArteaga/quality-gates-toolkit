@@ -523,17 +523,27 @@ the gate can do with it:
 
 - An answer with an **empty `<findings>` block passes**: under the promotion
   threshold above, "no finding" is the normal passing answer (D-0023).
-- An answer whose `<findings>` block is **missing** declares no findings *and*
-  no pass, so it is not read as a PASS. It is retried **once** with an
-  instruction naming the block, and an answer that is still unreadable leaves
-  the judge NEEDS REVIEW. The retry is issued once per judge call and is
-  bounded by `REVIEW_RETRY_BUDGET_SECONDS` like every other call (D-0026).
+- The block has to be **presented as a block**: its open tag stands at the
+  start of a line, or right after another tag — never inside a sentence. A
+  tag written mid-sentence (or inside backticks) is the judge *describing*
+  the format, not emitting it, so a quoted empty block does not pass and a
+  quoted JSON example does not fail (D-0026).
+- A block that is **present, non-empty and carries no readable finding**
+  declares no findings *and* no pass: it is prose the judge wrote inside the
+  tags, not a verdict, so it cannot pass on an empty parse (D-0026).
+- An answer whose block is **missing or unreadable** is retried **once** with
+  an instruction naming the block, and an answer that is still unreadable
+  leaves the judge NEEDS REVIEW. The retry is issued once per judge call and
+  is bounded by `REVIEW_RETRY_BUDGET_SECONDS` like every other call (D-0026).
+- A **finding written beside an explanatory sentence keeps failing** the
+  answer with that finding: the rule is readability, not strict per-line
+  format, so an unreadable line never discards a readable finding (D-0026).
 - An **empty response** keeps its own path: one retry with an explicit
   instruction, then the fallback model when one is configured.
 - The three ways a judge can end up with no verdict are reported distinctly:
   `Check failed to run: …` (the check raised), *Judge answer was not
-  parseable (no `<findings>` block).* (the answer's shape), and *Insufficient
-  context.* (the catch-all). See D-0026.
+  parseable (no readable `<findings>` block).* (the answer's shape), and
+  *Insufficient context.* (the catch-all). See D-0026.
 
 ### Review-run environment variables
 
@@ -703,12 +713,15 @@ Two loud-fail paths to expect:
   transport failed (typically OpenRouter HTTP 429). Retries consume
   `REVIEW_RETRY_BUDGET_SECONDS` (default 45 min); rerun the failed job once
   quota resets. A review *with* findings is a real verdict, not an outage.
-- **A judge reports "Judge answer was not parseable (no `<findings>` block)"**
-  — that node's model answered without the block its prompt requires, and the
-  one retry did not fix it. Nothing is wrong with the diff: re-run the job
-  (the answer is a per-call sample) or change that node's model/provider in
-  the judge config, since format adherence is model- and provider-specific
-  (D-0026). The full answer is in the judge's reasoning block.
+- **A judge reports "Judge answer was not parseable (no readable
+  `<findings>` block)"** — that node's model answered without a readable
+  block its prompt requires: either the block is missing, or what it put
+  inside the tags carries no JSON finding (prose, or a block it only
+  *mentioned* in a sentence). The one retry did not fix it. Nothing is wrong
+  with the diff: re-run the job (the answer is a per-call sample) or change
+  that node's model/provider in the judge config, since format adherence is
+  model- and provider-specific (D-0026). The full answer is in the judge's
+  reasoning block.
 - **Review job red and no review was posted at all** — the submission was
   refused (a token that cannot review, a repository policy, a PR that
   vanished). The verdicts are not lost: the job log carries the full body,
@@ -788,11 +801,13 @@ versioned public contract specified in [`DECISIONS.md`](DECISIONS.md)
   checkout target does not exist for fork PRs.
 - `pull_request_target` is deliberately not offered as a fork workaround
   (it would check out and run untrusted PR code with secrets).
-- A judge answer that merely *quotes* the `<findings>` block in prose is read
-  as tagged — `parse_xml_tags` finds the tags wherever they appear — so the
-  quoted block's prose parses into no findings. Issue #70 deliberately left
-  the extraction semantics unchanged and pinned the behaviour with a test;
-  tightening it would change how sloppy-but-usable answers are read (D-0026).
+- A judge that *illustrates* the format with a correctly shaped block of its
+  own — line-delimited JSON whose tags stand at a block boundary, fenced or
+  not, with no verdict block anywhere in the answer — is still read as its
+  verdict, because that answer is structurally identical to one. The
+  mid-sentence variant is not read (a tag inside a sentence is not a block),
+  and no deterministic rule can separate a well-formed illustration from a
+  verdict (D-0026).
 
 ## License
 
