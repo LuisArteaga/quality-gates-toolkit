@@ -20,7 +20,11 @@ name = "quality-gates-toolkit"
 # block merely mentioned in prose, or one carrying no readable finding,
 # is unparseable; a compact answer stays a verdict (D-0026 amendment,
 # PR #76).
-version = "1.8.7"
+# 1.8.8 carries the fallback ladder's unusable-answer trigger: an answer
+# still unreadable (or empty) after the one retry is asked of the node's
+# fallback_model, and the fallback answer is final, bounding the
+# progression at three calls (D-0027, PR #79).
+version = "1.8.8"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
