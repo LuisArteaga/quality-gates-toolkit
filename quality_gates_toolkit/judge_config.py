@@ -32,6 +32,14 @@ Completion bound: the resolved config always carries a positive
 ``max_tokens`` — the consumer's value when set, else ``DEFAULT_MAX_TOKENS``
 (D-0021). It is a request-level latency/cost bound, not a model setting, so
 it persists across the fallback path in review.py.
+
+Fallback model: ``fallback_model`` is validated at this same boundary — a
+malformed value warns and resolves to ``None``, so the retry ladder degrades
+to "no fallback configured" instead of failing on its last attempt, and a
+value equal to the resolved ``model`` warns (it re-asks the same model) but
+is kept (D-0028). A configured id is never checked against OpenRouter's
+model list: resolution stays offline, and the id must simply name a model
+the provider serves.
 """
 
 import json
@@ -81,6 +89,38 @@ def _resolve_max_tokens(value: Any, node_name: str) -> int:
             f"positive integer; using default {DEFAULT_MAX_TOKENS}."
         )
         return DEFAULT_MAX_TOKENS
+    return value
+
+
+def _resolve_fallback_model(value: Any, node_name: str, model: str) -> str | None:
+    """The effective ``fallback_model`` for ``node_name``.
+
+    A configured fallback is used as-is when it is a non-empty string; a
+    malformed one (``null``, a non-string, or an empty/blank string) warns
+    and resolves to ``None`` so the ladder degrades to "no fallback
+    configured" — a malformed rescue path must not be the failure the last
+    attempt reports (D-0028).
+
+    A value equal to the resolved ``model`` warns but is kept: the fallback
+    call resets ``routing``, ``options`` and ``temperature`` (ADR-0021), so it
+    is still a different request for a routing-pinned node, and the attempt
+    count is what bounds the ladder (D-0027). The id is otherwise not
+    validated — resolution stays offline (D-0028).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        _warn(
+            f"Config key 'fallback_model' for node '{node_name}' must be a "
+            f"non-empty string; ignoring it (no fallback configured)."
+        )
+        return None
+    if value == model:
+        _warn(
+            f"Config key 'fallback_model' for node '{node_name}' equals its "
+            f"'model' ({model}); the fallback re-asks the same model with "
+            f"routing, options and temperature reset."
+        )
     return value
 
 
@@ -146,7 +186,10 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
     "fallback_model": str | None}``
 
     ``max_tokens`` is always a positive integer: the configured value when
-    valid, otherwise ``DEFAULT_MAX_TOKENS`` (D-0021).
+    valid, otherwise ``DEFAULT_MAX_TOKENS`` (D-0021). ``fallback_model`` is
+    either a non-empty string or ``None``: a malformed value warns and
+    resolves to ``None``, and one equal to ``model`` warns but is kept
+    (D-0028).
     """
     factory = load_factory_config()
     # Validate the optional section declaration up-front (even when the
@@ -205,9 +248,11 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
             "temperature": temperature,
             "options": options,
             "max_tokens": max_tokens,
-            "fallback_model": factory_cfg.get("fallback_model")
-            if factory_cfg
-            else None,
+            "fallback_model": _resolve_fallback_model(
+                factory_cfg.get("fallback_model") if factory_cfg else None,
+                node_name,
+                overridden_model,
+            ),
         }
         _warn(f"Model override active for '{node_name}' via {source}.")
     elif factory_cfg:
@@ -218,7 +263,11 @@ def resolve_model_config(node_name: str) -> dict[str, Any]:
             "temperature": factory_cfg.get("temperature", 0.0),
             "options": factory_cfg.get("options"),
             "max_tokens": _resolve_max_tokens(factory_cfg.get("max_tokens"), node_name),
-            "fallback_model": factory_cfg.get("fallback_model"),
+            "fallback_model": _resolve_fallback_model(
+                factory_cfg.get("fallback_model"),
+                node_name,
+                factory_cfg["model"],
+            ),
         }
     else:
         # 4. Hardcoded fallback (config missing/malformed or node absent)

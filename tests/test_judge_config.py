@@ -134,6 +134,90 @@ class TestFactoryResolution:
         assert "loop_hard_limit" not in cfg
 
 
+class TestFallbackModelValidation:
+    """`fallback_model` is validated at the resolution boundary (D-0028):
+    a malformed value warns and degrades to "no fallback configured", and a
+    value equal to the node's `model` warns while still being kept."""
+
+    def test_valid_fallback_model_resolves_unchanged_without_warning(
+        self, tmp_path, capsys
+    ):
+        _write_factory(
+            tmp_path,
+            {
+                "syntax_lint": {
+                    "model": "vendor/model-a",
+                    "fallback_model": "vendor/model-b",
+                }
+            },
+        )
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["fallback_model"] == "vendor/model-b"
+        assert "fallback_model" not in capsys.readouterr().err
+
+    def test_fallback_model_equal_to_the_node_model_warns_and_is_kept(
+        self, tmp_path, capsys
+    ):
+        # Kept on purpose: the fallback call still resets routing, options
+        # and temperature (ADR-0021), and D-0027's attempt count is the
+        # bound. The condition is what must stop being silent.
+        _write_factory(
+            tmp_path,
+            {
+                "syntax_lint": {
+                    "model": "vendor/model-a",
+                    "fallback_model": "vendor/model-a",
+                }
+            },
+        )
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["fallback_model"] == "vendor/model-a"
+        assert (
+            "[WARN] Config key 'fallback_model' for node 'syntax_lint' equals "
+            "its 'model' (vendor/model-a)" in capsys.readouterr().err
+        )
+
+    def test_fallback_model_naming_an_unknown_id_is_kept(self, tmp_path, capsys):
+        # Resolution stays offline: an id the provider does not serve is a
+        # documented consumer requirement, not something this resolves.
+        _write_factory(
+            tmp_path,
+            {
+                "syntax_lint": {
+                    "model": "vendor/model-a",
+                    "fallback_model": "vendor/not-a-model",
+                }
+            },
+        )
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["fallback_model"] == "vendor/not-a-model"
+        assert "fallback_model" not in capsys.readouterr().err
+
+    def test_omitted_fallback_model_resolves_to_none_without_warning(
+        self, tmp_path, capsys
+    ):
+        _write_factory(tmp_path, {"syntax_lint": {"model": "vendor/model-a"}})
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["fallback_model"] is None
+        assert "fallback_model" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("bad_value", [123, 1.5, True, [], {}, "", "   "])
+    def test_malformed_fallback_model_warns_and_resolves_to_none(
+        self, tmp_path, capsys, bad_value
+    ):
+        _write_factory(
+            tmp_path,
+            {"syntax_lint": {"model": "vendor/model-a", "fallback_model": bad_value}},
+        )
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["fallback_model"] is None
+        assert (
+            "[WARN] Config key 'fallback_model' for node 'syntax_lint' must be a "
+            "non-empty string; ignoring it (no fallback configured)."
+            in capsys.readouterr().err
+        )
+
+
 class TestEnvOverridePrecedence:
     def test_node_env_var_beats_factory_and_disables_routing(self, tmp_path):
         _write_factory(
@@ -190,6 +274,31 @@ class TestEnvOverridePrecedence:
         assert cfg["temperature"] == 0.7
         assert cfg["options"] == {"reasoning": {"effort": "high"}}
         assert cfg["max_tokens"] == 2048
+
+    def test_fallback_model_equal_to_the_env_override_model_warns(
+        self, tmp_path, capsys
+    ):
+        # The equality check compares against the model the node will actually
+        # be asked with — here the override, not the factory's `model`.
+        _write_factory(
+            tmp_path,
+            {
+                "security": {
+                    "model": "vendor/model-a",
+                    "fallback_model": "vendor/override",
+                }
+            },
+        )
+        os.environ["SECURITY_MODEL"] = "vendor/override"
+        try:
+            cfg = judge_config.resolve_model_config("security")
+        finally:
+            del os.environ["SECURITY_MODEL"]
+        assert cfg["fallback_model"] == "vendor/override"
+        assert (
+            "[WARN] Config key 'fallback_model' for node 'security' equals "
+            "its 'model' (vendor/override)" in capsys.readouterr().err
+        )
 
 
 class TestConfigPathResolution:

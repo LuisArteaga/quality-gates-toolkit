@@ -25,6 +25,11 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   fallback answer that is unreadable too is reported the same way; the
   fallback attempt is final, so the ladder spends at most three calls, and a
   node without a `fallback_model` keeps the retry-only behaviour (D-0027).
+  The fallback id is validated where the config is resolved (D-0028): a
+  malformed value warns and leaves the node with no fallback rather than
+  failing on the last attempt, a value equal to the node's `model` warns as
+  the no-op rescue path it is, and a valid id is never checked against the
+  provider's model list — resolution stays offline.
   When that submission is refused, the body is persisted, dumped to the job
   log and uploaded as a failure-path artifact instead of being discarded
   (D-0024).
@@ -32,7 +37,10 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   `semgrep_scan.py` wraps the external Semgrep scanner with the bounded
   ruleset-fetch retry that the pre-commit hook and `security.yml` both run
   (D-0025).
-- `judge_config.py` resolves per-judge model/routing configuration.
+- `judge_config.py` resolves per-judge model/routing configuration, validating
+  the two consumer-supplied knobs at that boundary: the completion cap always
+  resolves to a positive integer (D-0021) and `fallback_model` always resolves
+  to a non-empty string or `None` (D-0028).
 - `telemetry.py` provides tracing for the review run: OpenTelemetry with
   no-op degradation when the SDK is absent, local JSONL span logging, and
   opt-in OTLP/Langfuse export driven purely by environment variables.
