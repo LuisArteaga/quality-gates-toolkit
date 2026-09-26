@@ -1600,3 +1600,104 @@ considered and rejected:
 - social-engagement-engine #49 — the consumer-side record, including the
   `options.provider.ignore` workaround this entry is meant to replace.
 
+## D-0028 — `fallback_model` is validated at resolution; a no-op fallback warns
+
+- Date: 2026-09-26
+- Status: Accepted
+
+### Decision
+
+`fallback_model` passes the same validation boundary as its sibling
+`max_tokens` (`_resolve_fallback_model` in `judge_config.py`), applied
+wherever the key enters the resolved config — the flat factory entry, a
+nested section entry (D-0015) and the env-override branch, which compares
+against the model the node will *actually* be asked with:
+
+1. **A malformed value never becomes the rescue path.** A non-string or an
+   empty/blank string warns and resolves to `None`, so the ladder degrades to
+   "no fallback configured" and behaves exactly like a config that omits the
+   key. Threaded through verbatim as before, a broken value surfaced as a
+   judge that "cannot run" on the last attempt (D-0027 routes every unusable
+   answer there), attributing a config error to the model. An explicit JSON
+   `null` is *not* a malformation: `dict.get` cannot distinguish it from an
+   omitted key, both mean "no fallback", and it resolves to `None` silently.
+2. **A value equal to the resolved `model` warns but is kept.** The rescue
+   path the operator configured is a no-op — the same model is asked again —
+   so the condition is reported at resolution time. It is not skipped: the
+   fallback call still resets `routing`, `options` and `temperature`
+   (ADR-0021), which is a *different request* for a node with pinned routing,
+   and the attempt count is what bounds the ladder (D-0027). Validation adds
+   the signal; it does not change the ladder.
+3. **The id is never checked against OpenRouter's model list.** Resolution
+   stays offline and deterministic: a network call in config resolution would
+   fail reviews on a transient API hiccup. The requirement is documented
+   instead ("the id must name a model the provider serves"), exactly as the
+   `routing` provider names already are — a nonexistent one fails loudly on
+   the last attempt rather than being detected here.
+4. **The resolved contract keeps its shape.** A config that omits the key
+   still resolves to `None` and behaves exactly as today; a valid value
+   resolves unchanged; the golden flat resolutions (D-0015) are untouched,
+   since every node in the shipped example carries a fallback that differs
+   from its `model`.
+5. **The toolkit's own default branch has nothing to validate.** The
+   hardcoded-model branch (branch 4 of `resolve_model_config`) has no
+   consumer-supplied value, so it keeps the literal `None`; the validator
+   sits where a consumer value enters, not as a pass-through on a constant.
+
+### Rationale
+
+D-0021 established the promise for the completion bound: *a malformed config
+value can never remove the bound*. `fallback_model` carried the mirror-image
+risk without the mirror-image guard — a malformed value could **manufacture**
+an unusable rescue path, and neither of the two shapes it can take was
+observable from the config or the run outcome. Both are reachable with a
+config file that looks valid, and both were diagnosed only by reading the log
+closely, which is the definition of a silent failure.
+
+Keeping an equal fallback (rather than dropping it at resolution) is the
+deliberate half. The ladder's whole purpose is to escape a configuration that
+cannot answer usably, and for a routing-pinned node the reset `routing` *is*
+that escape — the same mechanism D-0022 relies on for timeouts. Dropping the
+attempt would remove a working capability on the strength of a string
+comparison, and it would move a routing decision into config parsing, where
+the node's routing is not what is being decided. The cost of keeping it is at
+most one call, already bounded by the attempt count.
+
+Validation at the resolution boundary rather than at the call site is what
+makes the check total: resolution is the only place that holds the node name,
+the resolved `model` and the configured fallback at once, it runs once per
+judge per PR rather than once per attempt, and it is the same boundary the
+sibling knob uses — so the next consumer-supplied knob has one obvious home.
+
+### Consequences
+
+- Two new warning shapes in the run log, both naming the node:
+  `fallback_model` malformed → *must be a non-empty string; ignoring it (no
+  fallback configured)*; equal to the model → *equals its 'model' (…); the
+  fallback re-asks the same model with routing, options and temperature
+  reset*.
+- The resolved `fallback_model` is now **always** either `None` or a non-empty
+  string, so consumers of the config dict read it as "configured or not"
+  rather than "configured, and hopefully well-shaped".
+- A consumer whose fallback id is a typo or names a model nobody serves still
+  fails on the last attempt — documented behaviour, not detected: the toolkit
+  does not know a consumer's provider roster offline.
+- No behaviour change for valid configs: the retry ladder, the D-0027 attempt
+  bound, the fallback trigger set and the verdict contract are untouched, and
+  no golden resolution changes.
+
+### Inspiration & References
+
+- Issue #81 — the problem statement, the two silent failure shapes, and the
+  explicit boundary against validating ids over the network.
+- D-0021 — the `max_tokens` validation precedent in the same function, which
+  this entry mirrors for the second consumer-supplied knob.
+- D-0027 — the ladder that routes every unusable answer to the fallback, and
+  the attempt count that keeps an equal-model fallback harmless.
+- ADR-0021 — the fallback call's reset shape (`routing=None`, `options=None`,
+  `temperature=0.0`), which is why an equal fallback is not a pure duplicate.
+- D-0015 — the nested-section resolution whose contract this entry leaves
+  unchanged while validating inside it.
+- `config/factory.example.json` — the shipped config that teaches consumers
+  the key, and whose four entries all carry a distinct fallback model.
+

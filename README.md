@@ -431,6 +431,17 @@ parser, so a fallback can never turn an unreadable answer into a PASS. When it
 answers, the review body says so and the KPI table's Model column names it.
 See D-0027.
 
+`fallback_model` must name a model the provider actually serves — the toolkit
+does not check the id against OpenRouter's model list, because resolution
+stays offline (a transient API hiccup must not fail a review), so a
+nonexistent id fails on the last attempt rather than being reported at
+resolution. Two shapes *are* reported there: a malformed value (a non-string,
+or an empty/blank string) warns and is ignored, leaving the node with no
+fallback, and a value equal to `model` warns — it re-asks the same model,
+differing only in the reset `routing`/`options`/`temperature` above, so it is
+kept and the ladder still spends at most three calls, but the run log names
+the no-op rescue path. See D-0028.
+
 **Nested judge sections** — consumers whose `factory.json` also holds
 non-judge sections (e.g. an orchestrator config) may nest the four judge
 nodes under a section instead of the top level:
