@@ -32,7 +32,7 @@ on:
       toolkit-ref:
         description: Toolkit ref providing the review implementation.
         type: string
-        default: "v1.8.6"
+        default: "v1.8.7"
       config-path:
         description: Judge config path relative to the caller repository root.
         type: string

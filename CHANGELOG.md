@@ -10,6 +10,34 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.8.7] - 2026-09-26
+
+### Fixed
+
+- A judge answer is a verdict only when its `<findings>` block is **presented
+  as a block**. A tag written inside a sentence (or in backticks) is the judge
+  *describing* the format rather than emitting it, so prose that quoted an
+  empty block no longer passes with nothing parsed, and prose that quoted a
+  JSON example no longer fails on the illustration. The open tag has to stand
+  at the start of the content, at the start of a line, or immediately after
+  another tag — the last clause keeps a compact answer
+  (`</reasoning><findings></findings>`) a verdict (D-0026 amendment, PR #76).
+- A `<findings>` block that is present, non-empty and carries no readable
+  finding is unparseable instead of passing silently: a block holding only
+  prose, or only a malformed JSON line, declared no findings *and* no pass. It
+  takes the existing path — one retry, then NEEDS REVIEW. A block carrying one
+  readable finding beside an explanatory sentence still fails the answer with
+  that finding, because the rule is readability rather than strict per-line
+  format (D-0026 amendment, PR #76).
+
+### Changed
+
+- An answer whose `<findings>` tags appear only inside prose now reports that
+  shape ("the tag appears only inside prose") instead of claiming the tags are
+  missing, and the review body's label reads *Judge answer was not parseable
+  (no readable `<findings>` block).* The retry instruction asks for a block on
+  its own lines holding one JSON object per finding (D-0026 amendment, PR #76).
+
 ## [1.8.6] - 2026-09-25
 
 ### Fixed
@@ -311,7 +339,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.6...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.7...HEAD
+[1.8.7]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.6...v1.8.7
 [1.8.6]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.3...v1.8.4
