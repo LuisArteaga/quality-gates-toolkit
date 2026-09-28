@@ -31,7 +31,12 @@ name = "quality-gates-toolkit"
 # 1.9.0 carries the pinned-scanner lockstep between security.yml and the
 # pre-commit hooks, the consumer-owned Semgrep config input, and the move
 # of consumer inputs into the step environment (D-0029, PR #88).
-version = "1.9.0"
+# 1.9.1 carries the judge secret contract at the entry point: the README
+# states the openrouter-api-key requirement where the entry point is
+# chosen, the fail-fast validation runs before the checkouts and names
+# the caller-side fix, and the snippet it prints is assembled at run time
+# so the message can never print the key (D-0005 amendment, PR #91).
+version = "1.9.1"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
