@@ -94,6 +94,32 @@ jobs:
       REVIEW_CONFIG_PATH: ${{ inputs.config-path }}
       REVIEW_BATCH_BUDGET_CHARS: ${{ inputs.batch-budget-chars || '200000' }}
     steps:
+      - name: Validate judge configuration
+        # Fail-fast BEFORE the checkouts and before any API spend: a caller
+        # missing the secret learns the fix in seconds rather than after the
+        # toolkit download, and the message names the caller-side fix so no
+        # consumer has to read this workflow to wire the secret. GitHub cannot
+        # make a secret conditionally required on an input, so runtime
+        # validation is the contract.
+        #
+        # The snippet below is assembled at run time (see `brace`) because this
+        # file must not contain the expression sequence that interpolates the
+        # key: a secrets-context expression inside script text is substituted
+        # before the shell parses it, so echoing it would print the real key.
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "[ERR] openrouter-api-key secret not configured."
+            echo "      Forward it from the calling job, e.g.:"
+            echo "        secrets:"
+            brace='{{'
+            echo "          openrouter-api-key: \$$brace secrets.OPENROUTER_API_KEY }}"
+            echo "      See README \"Secrets\" — deterministic-only usage reads no secrets."
+            exit 1
+          fi
+          if [ -z "$PR_NUMBER" ]; then echo "[ERR] No pull_request event (PR_NUMBER empty)."; exit 1; fi
+          if [ -z "$GH_TOKEN" ]; then echo "[ERR] No judge token available."; exit 1; fi
+          gh auth status
+
       - name: Check out caller repository (PR head)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -125,16 +151,6 @@ jobs:
           except Exception as e:
               print(f'[WARN] tree-sitter prefetch failed: {e}; enrichment will degrade.')
           "
-
-      - name: Validate judge configuration
-        # Fail-fast BEFORE any API spend: GitHub cannot make a secret
-        # conditionally required on an input, so runtime validation is the
-        # contract.
-        run: |
-          if [ -z "$OPENROUTER_API_KEY" ]; then echo "[ERR] openrouter-api-key secret not configured."; exit 1; fi
-          if [ -z "$PR_NUMBER" ]; then echo "[ERR] No pull_request event (PR_NUMBER empty)."; exit 1; fi
-          if [ -z "$GH_TOKEN" ]; then echo "[ERR] No judge token available."; exit 1; fi
-          gh auth status
 
       - name: Run PR review judges
         # review.py reads the PR diff from stdin and posts the combined
