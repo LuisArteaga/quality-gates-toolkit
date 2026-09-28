@@ -61,12 +61,17 @@ jobs:
         # fallback. pytest comes from the caller's [dev] extra, so a
         # runtime-only fallback could not rescue the job.
         working-directory: repo
+        env:
+          # Consumer input: reaches the shell through the environment, never
+          # interpolated into the script text. Unquoted on purpose — a
+          # space-separated list whose words must split (#89 / D-0029).
+          EXTRA_PIP_PACKAGES: ${{ inputs.extra-pip-packages }}
         run: |
           pip install --upgrade pip
           pip install -e .[dev]
           # Callers without extra runtime packages pass the single token
           # `none`; the loop is a no-op for them.
-          for pkg in ${{ inputs.extra-pip-packages }}; do
+          for pkg in $EXTRA_PIP_PACKAGES; do
             if [ "$pkg" = "none" ]; then continue; fi
             pip install "$pkg"
           done
@@ -109,13 +114,21 @@ jobs:
         # per-file missing-line table visible in the CI logs; the JSON report
         # feeds the Diff Coverage Gate.
         working-directory: repo
+        env:
+          # Consumer inputs reach the shell through the environment, never
+          # interpolated into the script text (#89 / D-0029). COV_PATHS stays
+          # unquoted — a space-separated list whose words must split into
+          # repeated --cov flags; COVERAGE_FLOOR is a single value, expanded
+          # quoted.
+          COV_PATHS: ${{ inputs.cov-paths }}
+          COVERAGE_FLOOR: ${{ inputs.coverage-floor }}
         run: |
           set -o pipefail
           COV_FLAGS=""
-          for path in ${{ inputs.cov-paths }}; do
+          for path in $COV_PATHS; do
             COV_FLAGS="$COV_FLAGS --cov=$path"
           done
-          pytest $COV_FLAGS --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=${{ inputs.coverage-floor }}
+          pytest $COV_FLAGS --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under="${COVERAGE_FLOOR}"
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

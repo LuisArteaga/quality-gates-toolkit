@@ -39,8 +39,13 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
 - D-0029 scanner pin lockstep: `security.yml` installs the SAME semgrep and
   pip-audit versions the pre-commit hooks install, so local and CI run one
   engine; the semgrep configuration is an input rather than hardcoded YAML.
+- D-0029 workflow script injection (#89): no `run:` body interpolates
+  `${{ inputs.* }}`, `${{ github.event* }}` or `${{ github.head_ref }}` —
+  untrusted context reaches the shell through a step `env:` variable, and a
+  class-wide sweep fails the suite when one is reintroduced.
 """
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1069,3 +1074,195 @@ def test_hook_and_security_gate_share_one_semgrep_implementation():
     module_file = entry_point.split(":")[0].replace(".", "/") + ".py"
     semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
     assert module_file in semgrep_step
+
+
+# ---------------------------------------------------------------------------
+# Workflow script injection (D-0029 / #89)
+# ---------------------------------------------------------------------------
+
+# The untrusted families, as literal prefixes. `${{ ... }}` is substituted
+# into a `run:` body BEFORE the shell parses it, so an inlined value is
+# arbitrary shell source at execution time: `inputs.*` (a caller may wire
+# untrusted context into one), `github.event*` (the event payload) and
+# `github.head_ref` (a fork's branch name). Workflow-controlled expressions —
+# `github.sha`, `github.base_ref`, `github.repository`, `env.*`,
+# `steps.*.outputs.*` — stay allowed: flagging them would be a false positive,
+# and the first false positive is how such a sweep gets disabled.
+UNTRUSTED_RUN_INTERPOLATION = re.compile(
+    re.escape("${{")
+    + r"[ \t]*(?:inputs[.]|github[.]event|github[.]head_ref)[^}]*"
+    + re.escape("}}")
+)
+
+
+def test_the_injection_sweep_matches_only_the_untrusted_families():
+    """A pattern that matches nothing — or one that matches everything — makes
+    the sweep below vacuous in one direction. Pin the boundary: every
+    untrusted family matches, and no workflow-controlled expression does."""
+    guarded = [
+        "${{ inputs.lint-paths }}",
+        "${{inputs.coverage-floor}}",
+        "${{ github.event.pull_request.base.sha }}",
+        "${{ github.head_ref }}",
+    ]
+    allowed = [
+        "${{ github.base_ref }}",
+        "${{ github.sha }}",
+        "${{ github.repository }}",
+        "${{ env.RUFF_VERSION }}",
+        "${{ steps.x.outputs.y }}",
+        "${{ runner.os }}",
+    ]
+    for expr in guarded:
+        assert UNTRUSTED_RUN_INTERPOLATION.search(expr), f"must guard {expr}"
+    for expr in allowed:
+        assert not UNTRUSTED_RUN_INTERPOLATION.search(expr), f"must allow {expr}"
+
+
+def _step(wf_name: str, job_id: str, name_fragment: str) -> dict[str, Any]:
+    steps = _jobs(_load(wf_name))[job_id]["steps"]
+    return next(step for step in steps if name_fragment in step["name"])
+
+
+def test_no_run_script_interpolates_untrusted_context():
+    """The durable half of #89: the class is fixed once, and this fails the
+    build when the next workflow edit reintroduces it. A `run:` body is shell
+    source, so an untrusted expression in it means command execution on the
+    runner with the job's token and secrets in scope."""
+    bodies = [
+        (path.name, script)
+        for path in sorted(WORKFLOWS.glob("*.yml"))
+        for script in _run_steps(path.name)
+    ]
+    assert bodies, "the sweep must actually find run: scripts"
+    offenders = [
+        f"{name}: {match}"
+        for name, script in bodies
+        for match in UNTRUSTED_RUN_INTERPOLATION.findall(script)
+    ]
+    assert offenders == [], (
+        "untrusted context is interpolated into run: script text; route it "
+        f"through a step env: variable instead (D-0029): {offenders}"
+    )
+
+
+def test_the_run_script_sweep_covers_every_shell_workflow():
+    """A sweep that silently reads nothing passes unconditionally, so the
+    coverage is pinned here — and so is its deliberate limit: `with:` / `env:`
+    / `if:` hold values, not script text, and keep interpolating."""
+    swept = {path.name for path in WORKFLOWS.glob("*.yml") if _run_steps(path.name)}
+    assert swept >= {
+        "diff-coverage.yml",
+        "js-lint.yml",
+        "js-test.yml",
+        "js-typecheck.yml",
+        "lint.yml",
+        "llm-pr-review.yml",
+        "secret-scan.yml",
+        "security.yml",
+        "test.yml",
+    }, swept
+    with_ = _jobs(_load("pr-checks.yml"))["lint"]["with"]
+    assert with_["lint-paths"] == "${{ inputs.lint-paths }}", (
+        "with: blocks are values; the guard must not be widened to them"
+    )
+
+
+def test_list_inputs_reach_the_shell_as_unquoted_env_expansions():
+    """D-0029 point 4 applied to every site (#89). A space-separated list
+    input arrives as ONE env variable expanded UNQUOTED: word splitting is
+    its documented contract and shell parameter expansion is not re-scanned
+    for shell operators, so the injection vector closes while the list
+    semantics survive. Quoting it would collapse a multi-path value into a
+    single argument."""
+    # (workflow, job, step-name fragment, env variable, value, expansion)
+    sites = [
+        (
+            "lint.yml",
+            "lint",
+            "Install caller project",
+            "EXTRA_PIP_PACKAGES",
+            "${{ inputs.extra-pip-packages }}",
+            "for pkg in $EXTRA_PIP_PACKAGES; do",
+        ),
+        (
+            "lint.yml",
+            "lint",
+            "Ruff lint",
+            "LINT_PATHS",
+            "${{ inputs.lint-paths }}",
+            "ruff check $LINT_PATHS",
+        ),
+        (
+            "lint.yml",
+            "lint",
+            "Ruff format check",
+            "LINT_PATHS",
+            "${{ inputs.lint-paths }}",
+            "ruff format --check $LINT_PATHS",
+        ),
+        (
+            "lint.yml",
+            "lint",
+            "Mypy typecheck",
+            "LINT_PATHS",
+            "${{ inputs.lint-paths }}",
+            "mypy $LINT_PATHS",
+        ),
+        (
+            "test.yml",
+            "test",
+            "Install dependencies",
+            "EXTRA_PIP_PACKAGES",
+            "${{ inputs.extra-pip-packages }}",
+            "for pkg in $EXTRA_PIP_PACKAGES; do",
+        ),
+        (
+            "test.yml",
+            "test",
+            "Run pytest with coverage",
+            "COV_PATHS",
+            "${{ inputs.cov-paths }}",
+            "for path in $COV_PATHS; do",
+        ),
+        (
+            "llm-pr-review.yml",
+            "llm-pr-review",
+            "Run PR review judges",
+            "DIFF_EXCLUDE",
+            "${{ inputs.diff-exclude }}",
+            "for p in $DIFF_EXCLUDE; do",
+        ),
+    ]
+    for wf_name, job_id, fragment, var, value, expansion in sites:
+        step = _step(wf_name, job_id, fragment)
+        where = f"{wf_name}: {fragment}"
+        assert step["env"][var] == value, f"{where} must take {var} from env"
+        assert expansion in step["run"], f"{where} must expand {var} unquoted"
+        assert f"${{{var}}}" not in step["run"], (
+            f"{where} must not quote the list — word splitting is its contract"
+        )
+    # `extra-pip-packages` carries the single token `none` to mean "no extra
+    # packages"; an empty input yields zero words either way.
+    for wf_name, job_id, fragment in (
+        ("lint.yml", "lint", "Install caller project"),
+        ("test.yml", "test", "Install dependencies"),
+    ):
+        script = _step(wf_name, job_id, fragment)["run"]
+        assert 'if [ "$pkg" = "none" ]; then continue; fi' in script, (
+            f"{wf_name}: the single-token `none` skip must survive"
+        )
+
+
+def test_single_values_reach_the_shell_as_quoted_env_expansions():
+    """A single value is expanded quoted so an embedded space stays one
+    argument (#89). `coverage-floor` is a number-typed input: env variables
+    are strings and pytest parses the same token either way — the point is the
+    uniform route, not a type check."""
+    pytest_step = _step("test.yml", "test", "Run pytest with coverage")
+    assert pytest_step["env"]["COVERAGE_FLOOR"] == "${{ inputs.coverage-floor }}"
+    assert '--cov-fail-under="${COVERAGE_FLOOR}"' in pytest_step["run"]
+
+    gate = _step("diff-coverage.yml", "diff-coverage", "Run diff coverage gate")
+    assert gate["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
+    assert '--base="${BASE_SHA}"' in gate["run"]

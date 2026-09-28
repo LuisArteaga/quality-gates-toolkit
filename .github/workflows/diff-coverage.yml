@@ -59,4 +59,9 @@ jobs:
 
       - name: Run diff coverage gate
         working-directory: repo
-        run: python3 ../toolkit/scripts/diff_coverage_gate.py --coverage-json coverage.json --base ${{ github.event.pull_request.base.sha }}
+        env:
+          # Event value: reaches the shell through the environment, never
+          # interpolated into the script text (#89 / D-0029). A single value,
+          # expanded quoted.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 ../toolkit/scripts/diff_coverage_gate.py --coverage-json coverage.json --base="${BASE_SHA}"

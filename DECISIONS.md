@@ -1758,7 +1758,10 @@ The `security.yml` gate and the `semgrep` / `pip-audit` pre-commit hooks run
    documented contract (one `--config` per path is not), and shell parameter
    expansion is not re-scanned for shell operators, so the injection vector
    closes without changing the list semantics. A contract test asserts no
-   consumer input is inlined into that step's `run:`.
+   consumer input is inlined into that step's `run:`, and since issue #89 the
+   rule is class-wide — it covers **every** workflow in the collection and
+   every untrusted family (`inputs.*`, `github.event*`, `github.head_ref`),
+   enforced by a sweep over all `run:` bodies (amended 2026-09-28).
 5. **The ruleset stays live.** Pinning the *engine* does not pin the
    *ruleset*: a registry config re-resolves on Semgrep's schedule, so old code
    can gain findings with no repo change. That is retroactive coverage
@@ -1831,6 +1834,49 @@ why a registry update that flags old code is the intended behaviour.
   and uses the default `auto` ruleset, so it exercises the new input's default
   path on every PR (the dogfood canary).
 
+### Amendments
+
+- 2026-09-28 (issue #89): The environment-variable rule in point 4 becomes
+  **class-wide and enforced**. The issue inventoried nine further `run:` sites
+  in `lint.yml` (4), `test.yml` (3), `llm-pr-review.yml` (1) and
+  `diff-coverage.yml` (1) that inlined `${{ inputs.* }}` or
+  `${{ github.event.* }}` into shell text — the same pattern this entry fixed
+  for `security.yml`, still spread across the collection, with no
+  deterministic gate watching the class. The Semgrep `auto` ruleset carries no
+  Actions rules and the toolkit's own `scan-paths` never covers
+  `.github/workflows/`, so the only detector that had ever run on the class is
+  the LLM review judge, and only on the lines a PR happened to touch.
+  1. **Every site is routed, not just the newest one.** The values reach the
+     shell as step `env:` variables: `LINT_PATHS`, `EXTRA_PIP_PACKAGES`,
+     `COV_PATHS`, `COVERAGE_FLOOR`, `DIFF_EXCLUDE`, `BASE_SHA`. The shape
+     differs by value type, exactly as in `security.yml`: space-separated list
+     inputs (`lint-paths`, `cov-paths`, `extra-pip-packages`, `diff-exclude`)
+     are expanded **unquoted** — word splitting is their documented contract —
+     and single values (`coverage-floor`, the PR base SHA) are expanded
+     **quoted**. No input name, type, default or semantic changed; the same
+     values reach the same tools.
+  2. **The guard is the durable half.** A contract test parses every workflow
+     and fails when any `run:` body interpolates `${{ inputs.* }}`,
+     `${{ github.event* }}` or `${{ github.head_ref }}`, so the class cannot be
+     fixed once and reintroduced by the next workflow edit. The sweep is itself
+     pinned in both directions — an expression of a guarded family must match
+     the pattern and a workflow-controlled one must not — because either
+     vacuous direction leaves it silently green.
+  3. **The sweep is scoped to the untrusted families.** Workflow-controlled
+     expressions stay allowed: `github.base_ref` (the base repository's branch,
+     which a fork cannot rename), `github.sha`, `github.repository`, `env.*`,
+     `steps.*.outputs.*`, `runner.*`. `github.head_ref` is listed separately for
+     the same reason — a fork's branch name *is* attacker-chosen. A sweep that
+     also flagged `github.base_ref` would be a false positive, and the first
+     false positive is how such a sweep gets disabled.
+  4. **A contract test, not an external workflow linter.** zizmor / CodeQL
+     Actions queries would cover more classes, but they add a dependency and a
+     second toolchain; the in-repo sweep is deterministic, dependency-free and
+     consistent with how this repo guards its other workflow invariants
+     (`test_no_secrets_inherit_anywhere`,
+     `test_third_party_actions_are_sha_pinned`). Adopting a linter for the
+     remaining classes is a separate decision (issue #89 non-goal).
+
 ### Inspiration & References
 
 - Issue #39 — the problem statement, the observed failure (one wasted CI
@@ -1855,4 +1901,7 @@ why a registry update that flags old code is the intended behaviour.
   recommendation (word splitting), not part of the injection fix.
 - [ShellCheck SC2086](https://github.com/koalaman/shellcheck/wiki/SC2086) —
   the word-splitting pitfall the `scan-paths` expansion deliberately accepts.
+- Issue #89 — the inventory of the nine remaining inlined sites, the shared
+  root cause (no deterministic gate reads the workflow YAML for this class),
+  and the explicit non-goal of adding an external workflow linter.
 

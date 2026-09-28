@@ -159,11 +159,16 @@ jobs:
         # surfacing the verdict as a red check consistent with the hard
         # merge gate.
         working-directory: repo
+        env:
+          # Consumer input: reaches the shell through the environment, never
+          # interpolated into the script text. Unquoted on purpose — a
+          # space-separated list of paths whose words must split (#89 / D-0029).
+          DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
         run: |
           set -euo pipefail
           base_ref="${{ github.base_ref }}"
           excludes=()
-          for p in ${{ inputs.diff-exclude }}; do
+          for p in $DIFF_EXCLUDE; do
             excludes+=(":(exclude)$p")
           done
           git diff -w "origin/${base_ref}...HEAD" -- . "${excludes[@]}" | python3 ../toolkit/scripts/review.py
