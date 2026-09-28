@@ -10,6 +10,27 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.9.1] - 2026-09-28
+
+### Changed
+
+- The judge job now validates the **`openrouter-api-key` secret before its
+  checkouts**. A caller that enables the review and forwards no key fails in
+  seconds instead of after the toolkit download, and the message prints the
+  `secrets:` block to add and points at the README rather than naming only the
+  symptom (D-0005 amendment, PR #91).
+- The README states that requirement **where the entry point is chosen** — the
+  composite quick start and *Caller prerequisites* — instead of only in the
+  *Secrets* reference a quick-start reader never reaches, and repeats that no
+  GitHub PAT is required to post a review (issue #48, D-0005 amendment,
+  PR #91).
+
+### Fixed
+
+- The fail-fast message can no longer print the OpenRouter key: the snippet it
+  shows is assembled at run time, because a secrets-context expression inside
+  `run:` text is substituted before the shell parses it (PR #91).
+
 ## [1.9.0] - 2026-09-28
 
 ### Added
@@ -436,7 +457,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.0...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.1...HEAD
+[1.9.1]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.9...v1.9.0
 [1.8.9]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.8...v1.8.9
 [1.8.8]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.7...v1.8.8
