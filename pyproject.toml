@@ -36,7 +36,12 @@ name = "quality-gates-toolkit"
 # chosen, the fail-fast validation runs before the checkouts and names
 # the caller-side fix, and the snippet it prints is assembled at run time
 # so the message can never print the key (D-0005 amendment, PR #91).
-version = "1.9.1"
+# 1.9.2 carries the script-injection class fix: every consumer- and
+# event-supplied value in the workflow collection reaches the shell
+# through a step env: variable instead of being interpolated into run:
+# text, and a contract test sweeps all run: bodies for the untrusted
+# families so the class cannot return (D-0029 amendment, PR #94).
+version = "1.9.2"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"
