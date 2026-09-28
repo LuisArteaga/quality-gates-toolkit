@@ -28,7 +28,10 @@ name = "quality-gates-toolkit"
 # warns and resolves to no fallback, a value equal to the node's model
 # warns as the no-op rescue path it is, and an id is never checked against
 # the provider's model list (D-0028, PR #83).
-version = "1.8.9"
+# 1.9.0 carries the pinned-scanner lockstep between security.yml and the
+# pre-commit hooks, the consumer-owned Semgrep config input, and the move
+# of consumer inputs into the step environment (D-0029, PR #88).
+version = "1.9.0"
 description = "Reusable GitHub Actions workflows, pre-commit hooks, and Python tooling for deterministic and LLM-assisted quality gates."
 readme = "README.md"
 requires-python = ">=3.12"

@@ -10,6 +10,44 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.9.0] - 2026-09-28
+
+### Added
+
+- `security.yml` accepts a **`semgrep-config` input** (default `auto`), and
+  both composites forward it, so a caller that runs the `semgrep` pre-commit
+  hook with a custom ruleset (e.g. `p/security-audit`) can give CI the same
+  one. CI previously hardcoded `--config=auto` while the hook took its config
+  from `args` — the half of the local/CI drift an engine pin cannot close
+  (D-0029, PR #88).
+
+### Changed
+
+- The `security` gate and the `semgrep` / `pip-audit` pre-commit hooks now run
+  **the same pinned scanner versions** (`semgrep==1.177.0`,
+  `pip-audit==2.10.1`). `security.yml` reads them from its job-level `env:`
+  block instead of `pip install -q <tool>`, which resolved whatever the index
+  held at run time and could differ from the hook the author had just run
+  locally. The equality is asserted by the contract suite rather than kept by
+  convention — pre-commit needs literal pins and a workflow cannot import
+  them, so a one-sided bump fails the toolkit's own build. The bump procedure
+  (both sites in one commit, shipped in a release PR) and the parity contract
+  are documented in the README (D-0029, PR #88).
+
+### Fixed
+
+- Consumer-supplied values now reach the Semgrep step's shell **through the
+  environment, never interpolated into the script text**. Inlining
+  `${{ inputs.* }}` into a `run:` block is a template-injection surface: a
+  caller that maps untrusted context into an input could break out of the
+  argument and execute shell on the runner. The single-valued config is
+  expanded quoted (`--config="${SEMGREP_CONFIG:-auto}"`) and the
+  space-separated scan paths are expanded unquoted, since word splitting is
+  their documented contract and shell parameter expansion is not re-scanned
+  for shell operators. The pre-existing interpolation in that step is hardened
+  with it, and a contract test fails if a consumer input is inlined there
+  again (D-0029, PR #88).
+
 ## [1.8.9] - 2026-09-26
 
 ### Added
@@ -398,7 +436,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.9...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.9...v1.9.0
 [1.8.9]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.8...v1.8.9
 [1.8.8]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.7...v1.8.8
 [1.8.7]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.6...v1.8.7
