@@ -297,6 +297,15 @@ optional input — the input names are the contract. Deterministic-only usage
     **Pull requests: Read and write** (plus the mandatory metadata read).
     No contents access needed — the diff is computed from the local git
     checkout; the token is only used for the review API calls.
+- **What the judge job validates:** before its checkouts, the job probes
+  `GET /repos/<caller repo>` with the token and fails in seconds, naming the
+  fix, when the token cannot read there — an expired or revoked token, or one
+  without access to that repository. Pull-requests *write* capability is not
+  pre-validated, because no cheap probe for it exists (a repository's
+  `.permissions` reports the authenticated user's role, not a fine-grained
+  PAT's granted scopes); a token that reads the repository but cannot review
+  is refused later, at submission, where the undelivered body is uploaded as
+  the `llm-pr-review-body` artifact (D-0024, D-0005).
 - Forwarded as `judge-token`; the workflow falls back to `github.token`
   automatically when it is declared but unset.
 
@@ -809,6 +818,15 @@ Two loud-fail paths to expect:
   (`openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}`); no PAT is
   needed. The job fails before checking out the toolkit, so that log is
   short by design.
+- **Judge check red within seconds: "judge-token cannot read
+  `<owner>/<repo>`"** — the forwarded token cannot reach the caller
+  repository: it is expired or revoked, or has no access to that repository.
+  Grant it **Pull requests: Read and write** (fine-grained PAT) or the
+  `repo` / `public_repo` scope (classic PAT), or drop `judge-token` to use
+  the tokenless default. A token that *can* read the repository but cannot
+  review passes this check and is refused later, at submission — see the
+  `llm-pr-review-body` artifact below. Note that the capability probe covers
+  read access only (D-0005).
 - **Review job red, but the posted review carries no findings** — the judge
   transport failed (typically OpenRouter HTTP 429). Retries consume
   `REVIEW_RETRY_BUDGET_SECONDS` (default 45 min); rerun the failed job once

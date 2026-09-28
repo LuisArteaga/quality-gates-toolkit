@@ -20,6 +20,11 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   before its checkouts (a seconds-long red check naming the caller-side fix),
   and the README says it in the quick start and the caller prerequisites
   (D-0005).
+  The same fail-fast step probes the judge token's read access to the caller
+  repository rather than merely reporting on it, and states in its own output
+  that pull-requests write capability is not pre-validated — no cheap probe
+  for it exists, since a repository's permissions report the user's role and
+  not a fine-grained PAT's granted scopes (D-0005).
   A verdict is read from the `<findings>` block the judge prompt asks for: the
   block has to be PRESENTED as a block (a tag quoted inside a sentence is
   prose about the format, not a verdict), an answer without a readable block

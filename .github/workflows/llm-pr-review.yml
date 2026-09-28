@@ -106,6 +106,10 @@ jobs:
         # file must not contain the expression sequence that interpolates the
         # key: a secrets-context expression inside script text is substituted
         # before the shell parses it, so echoing it would print the real key.
+        #
+        # Presence is not capability: the checks below also probe that the
+        # token can reach the caller repository, and the boundary of what is
+        # NOT checked is stated in the step's own output (issue #92, D-0005).
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
             echo "[ERR] openrouter-api-key secret not configured."
@@ -118,7 +122,35 @@ jobs:
           fi
           if [ -z "$PR_NUMBER" ]; then echo "[ERR] No pull_request event (PR_NUMBER empty)."; exit 1; fi
           if [ -z "$GH_TOKEN" ]; then echo "[ERR] No judge token available."; exit 1; fi
-          gh auth status
+          # `gh auth status` only REPORTS status: it exits 0 even for an
+          # invalid token, so it gates nothing (issue #92). Probe the caller
+          # repository instead — that fails for the classes checkable
+          # cheaply (an expired or revoked token, or one with no read access
+          # to this repository, a strict prerequisite of `gh pr review`).
+          # $GITHUB_REPOSITORY is a runner-provided variable, so the script
+          # stays expression-free (D-0029); on a pull_request event it is the
+          # PR's base repository, which is where the review is posted.
+          #
+          # Pull-requests WRITE capability is deliberately NOT pre-validated:
+          # no cheap probe exists for it. The repository's `.permissions`
+          # reflects the authenticated user's role rather than a fine-grained
+          # PAT's granted scopes, and scope headers are absent for fine-grained
+          # tokens, so gating on either would pass the very case this issue is
+          # about. A token that passes here and still cannot review fails at
+          # submission, where D-0024 persists the undelivered body.
+          if ! gh api --silent "/repos/$GITHUB_REPOSITORY"; then
+            echo "[ERR] judge-token cannot read $GITHUB_REPOSITORY."
+            echo "      It must be able to read the repository and post pull-request reviews:"
+            echo "      check that it is not expired and grants 'Pull requests: Read and write'"
+            echo "      (fine-grained PAT) or the 'repo' / 'public_repo' scope (classic PAT)."
+            echo "      Omit judge-token to post the review as github-actions[bot] instead."
+            echo "      See README \"Secrets\"."
+            exit 1
+          fi
+          echo "[INFO] judge-token can read $GITHUB_REPOSITORY."
+          echo "       Pull-requests write capability is not pre-validated; a token without"
+          echo "       it is refused at submission, where the undelivered body is uploaded"
+          echo "       as the llm-pr-review-body artifact (D-0024)."
 
       - name: Check out caller repository (PR head)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
