@@ -35,6 +35,9 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
 - D-0025 semgrep ruleset-fetch policy: the hook and security.yml run the SAME
   wrapper (`scripts/semgrep_scan.py`) — one bounded retry policy for the
   registry fetch, never two implementations that can drift apart.
+- D-0029 scanner pin lockstep: `security.yml` installs the SAME semgrep and
+  pip-audit versions the pre-commit hooks install, so local and CI run one
+  engine; the semgrep configuration is an input rather than hardcoded YAML.
 """
 
 from pathlib import Path
@@ -894,12 +897,72 @@ def test_security_gate_runs_the_semgrep_wrapper_from_the_toolkit_checkout():
     wrapper, taken from the toolkit checkout — never a second, YAML-local
     implementation of the same retry."""
     semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
-    assert "pip install -q semgrep" in semgrep_step
     assert "../toolkit/scripts/semgrep_scan.py" in semgrep_step
-    assert "--config=auto --error" in semgrep_step
+    assert "--config=${{ inputs.semgrep-config || 'auto' }} --error" in semgrep_step
     assert "semgrep scan" not in semgrep_step, (
         "the raw semgrep invocation bypasses the retry policy"
     )
+
+
+def _hook_scanner_pin(hook_id: str) -> str:
+    """The exact `name==version` a language:python hook installs."""
+    hooks_path = WORKFLOWS.parent.parent / ".pre-commit-hooks.yaml"
+    hooks = yaml.safe_load(hooks_path.read_text())
+    hook = next(h for h in hooks if h.get("id") == hook_id)
+    deps = hook["additional_dependencies"]
+    assert len(deps) == 1, f"{hook_id} must pin exactly one scanner, got {deps}"
+    return deps[0]
+
+
+def test_security_gate_pins_the_scanners_to_the_hook_versions():
+    """D-0029: one engine on both surfaces. pre-commit needs literal pins and
+    a workflow cannot import them, so the EQUALITY is the contract — each
+    `additional_dependencies` pin in .pre-commit-hooks.yaml must equal the
+    version `security.yml` installs for CI."""
+    env = _jobs(_load("security.yml"))["security"]["env"]
+    env_var = {"semgrep": "SEMGREP_VERSION", "pip-audit": "PIP_AUDIT_VERSION"}
+    for hook_id, var in env_var.items():
+        name, _, version = _hook_scanner_pin(hook_id).partition("==")
+        assert name == hook_id, f"unexpected hook package: {name}"
+        assert version, f"the {hook_id} hook must pin an exact version"
+        assert env[var] == version, (
+            f"{hook_id}: security.yml installs {env[var]}, the hook installs "
+            f"{version} — bump both in one commit (D-0029)"
+        )
+
+
+def test_security_gate_installs_the_pinned_scanner_versions():
+    """A pinned env var nobody reads pins nothing: the install steps must
+    consume it (the `lint.yml` RUFF_VERSION pattern). Installing the bare
+    package name — the pre-D-0029 shape — resolves whatever the index holds
+    that day, so local and CI silently diverge."""
+    semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
+    pip_audit_step = next(
+        run for run in _run_steps("security.yml") if "pip-audit" in run
+    )
+    assert 'pip install -q "semgrep==${{ env.SEMGREP_VERSION }}"' in semgrep_step
+    assert 'pip install -q "pip-audit==${{ env.PIP_AUDIT_VERSION }}"' in pip_audit_step
+
+
+def test_security_gate_exposes_the_semgrep_config_input():
+    """D-0029 AC-3: consumers align the CI ruleset with the ruleset their
+    local hook runs, so the config is an input (default `auto`) rather than
+    hardcoded YAML."""
+    inputs = _call_inputs(_load("security.yml"))
+    assert inputs["semgrep-config"]["default"] == "auto"
+    semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
+    assert "--config=${{ inputs.semgrep-config || 'auto' }} --error" in semgrep_step
+
+
+def test_composites_forward_the_semgrep_config_to_the_security_gate():
+    """Both entry points forward the knob: a composite caller is the
+    documented default consumer (D-0020), and the parity promise is
+    unreachable for it if the composite swallows the input."""
+    for name in ("python-checks.yml", "pr-checks.yml"):
+        inputs = _call_inputs(_load(name))
+        assert inputs["semgrep-config"]["default"] == "auto", name
+        job = _jobs(_load(name))["security"]
+        assert job["with"]["semgrep-config"] == "${{ inputs.semgrep-config }}", name
 
 
 def test_security_gate_takes_the_wrapper_ref_as_an_input():

@@ -1701,3 +1701,104 @@ sibling knob uses — so the next consumer-supplied knob has one obvious home.
 - `config/factory.example.json` — the shipped config that teaches consumers
   the key, and whose four entries all carry a distinct fallback model.
 
+## D-0029 — The CI and hook scanners are the same versions, and the Semgrep config is a consumer input
+
+- Date: 2026-09-28
+- Status: Accepted
+
+### Decision
+
+The `security.yml` gate and the `semgrep` / `pip-audit` pre-commit hooks run
+**one engine**, and the ruleset they are given is the consumer's decision:
+
+1. **Pinned, in step, on both surfaces.** `security.yml` installs
+   `semgrep==<version>` and `pip-audit==<version>` from version variables in
+   its job `env:` block (`SEMGREP_VERSION`, `PIP_AUDIT_VERSION` — the same
+   shape `lint.yml` uses for `RUFF_VERSION` / `MYPY_VERSION`), and those
+   versions are **equal to the `additional_dependencies` pins** in
+   `.pre-commit-hooks.yaml`. The bare `pip install -q semgrep` shape — which
+   resolved whatever the index held that day — is gone.
+2. **The equality is a contract test, not a convention.** pre-commit requires
+   literal strings (`additional_dependencies` cannot be templated) and a
+   workflow cannot import a sibling file at parse time, so there is no shared
+   constant to point at. `tests/test_workflow_contracts.py` asserts the two
+   sites agree and that the install steps actually consume the version
+   variables; a one-sided bump fails the toolkit's own build. The bump
+   procedure (both sites in one commit, shipped in a release PR) is documented
+   in the README.
+3. **`semgrep-config` is an input, default `auto`.** `security.yml` passes
+   `--config=${{ inputs.semgrep-config || 'auto' }}`, and both composites
+   forward the input to that job. A consumer that runs the hook with a custom
+   config (e.g. `p/security-audit`) can now give CI the same value, which is
+   the half of the drift an engine pin alone cannot close.
+4. **The ruleset stays live.** Pinning the *engine* does not pin the
+   *ruleset*: a registry config re-resolves on Semgrep's schedule, so old code
+   can gain findings with no repo change. That is retroactive coverage
+   working, not a flake — the same position D-0025 took — and the remedy is
+   local parity (same version, same config), never freezing the ruleset.
+   Vendoring the ruleset remains rejected (issue #39 non-goal).
+
+### Rationale
+
+The reported cost was concrete: a consumer with all local hooks green had CI
+fail with two blocking Semgrep findings, because CI ran a *different engine
+against a different ruleset* than the hook had just approved (a `p/security-audit`
+hook against a hardcoded `auto` CI scan, plus an unpinned `pip install`).
+That is a false-confidence failure at push time: the local gate's whole
+promise is "this is what CI will say".
+
+Two halves had to move together. The **version** half is a pin problem, and
+the repo already has a pin discipline (D-0007's toolkit-ref lockstep, D-0016's
+hook version ownership) — but a pin that is equal by coincidence drifts on
+the next bump, which is why the equality is asserted rather than documented.
+The **config** half is an ownership question: the toolkit owns the engine
+(the harness), the consumer owns the ruleset (their policy), which is exactly
+the split D-0012 draws for JS tooling. Hardcoding `auto` in the workflow put
+a consumer policy inside the toolkit and made the parity promise
+unsatisfiable for composite callers, who are the documented default entry
+point (D-0020). Making it an input with the current value as the default is
+additive: no existing caller changes behaviour.
+
+Keeping the ruleset live (rather than vendoring it) follows from what the gate
+is for — finding real problems. A frozen ruleset stops receiving new
+detection rules; D-0025's retry already treats a *fetch* failure as an
+infrastructure condition rather than a finding, and the same section explains
+why a registry update that flags old code is the intended behaviour.
+
+### Consequences
+
+- A consumer's local `semgrep` hook and the CI scan run the same scanner
+  version by construction. The remaining difference is the `--config` value,
+  which the consumer controls on both sides (`args:` locally,
+  `semgrep-config:` in CI).
+- A scanner bump is a two-file edit (`security.yml` env variable +
+  `.pre-commit-hooks.yaml` pin) that must land in one commit; the contract
+  test rejects anything else. Consumers pick both up through the release tag.
+- Composite callers gain a `semgrep-config` input; micro-workflow callers
+  gain it directly on `security.yml`. `auto` stays the default on all three,
+  so no existing pipeline changes behaviour.
+- `pip-audit` gains the same pin guarantee. Its hook is consumer-arg-driven
+  (`args: ["-r", "requirements.txt"]`), so only the engine version is shared,
+  not the audited target — documented, not enforced.
+- The toolkit's own `ci.yml` keeps passing `scan-paths` only; it is Python-only
+  and uses the default `auto` ruleset, so it exercises the new input's default
+  path on every PR (the dogfood canary).
+
+### Inspiration & References
+
+- Issue #39 — the problem statement, the observed failure (one wasted CI
+  cycle plus false confidence), the `semgrep-config` proposal, and the
+  explicit non-goals (no ruleset vendoring, no default change).
+- D-0007 — the toolkit-ref lockstep and its contract test, the precedent for
+  "equal by assertion, bumped in one commit, shipped by release tag".
+- D-0016 — hook version ownership follows dependency need; this entry extends
+  the ownership split to the CI surface for the two scanner hooks.
+- D-0012 — "the harness owns the environment, the project owns the tools": the
+  Semgrep ruleset is consumer policy, so it is an input rather than YAML.
+- D-0020 — the composite is the documented default entry point, which is why
+  the input is forwarded there rather than only declared on the micro-workflow.
+- D-0025 — the ruleset is fetched live and a failed fetch is retried; the same
+  section's reasoning ("retroactive coverage, not a flake") bounds this entry.
+- `lint.yml` — the in-repo `RUFF_VERSION` / `MYPY_VERSION` env-variable pattern
+  that `security.yml` now mirrors.
+

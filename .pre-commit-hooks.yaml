@@ -12,6 +12,12 @@
 # project's own toolchain there (node_modules for the js-* hooks, mypy plus
 # the project's dependency surface for `mypy`) — see README
 # "JavaScript / TypeScript gates".
+#
+# PIN LOCKSTEP (D-0029): the `semgrep` and `pip-audit` pins below are the
+# same versions `security.yml` installs for CI, so local and CI run one
+# engine. pre-commit requires literal strings here (no templating), so
+# tests/test_workflow_contracts.py asserts the two files agree — bump both
+# in one commit and ship them in a release PR (D-0007).
 - id: secret-scan
   name: quality-gates-toolkit secret scan
   description: Best-effort regex scan for committed secrets (stdlib only).
