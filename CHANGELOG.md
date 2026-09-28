@@ -10,6 +10,49 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.9.2] - 2026-09-28
+
+### Added
+
+- A contract test that **parses every workflow and fails when a `run:` body
+  interpolates an untrusted expression** — `${{ inputs.* }}`,
+  `${{ github.event* }}` or `${{ github.head_ref }}`. It is the durable half of
+  the fix below: the class cannot be closed once and reintroduced by the next
+  workflow edit. A companion test pins the pattern in both directions (guarded
+  families match, workflow-controlled expressions such as `github.base_ref`,
+  `github.sha` and `env.*` do not), so the sweep cannot pass vacuously
+  (issue #89, PR #94).
+- `docs/post-mortems/2026-09-28-workflow-script-injection.md` records the class:
+  nine sites shipped from the first release through v1.9.1 with no deterministic
+  gate watching them, because the security gate's `scan-paths` never covered
+  `.github/workflows/` and the LLM judge only sees lines a diff touches.
+
+### Changed
+
+- **D-0029 point 4 is now class-wide**: the environment-variable rule no longer
+  describes one step. It covers the whole workflow collection and every
+  untrusted family, with a dated amendment recording the inventory, the guard
+  and the rejected alternatives (issue #89, D-0029 amendment, PR #94).
+- The README states the rule as a **workflow authoring invariant** under
+  *Components → Reusable workflows*, and `docs/context.md` states it for the
+  architecture judge (issue #89, PR #94).
+
+### Fixed
+
+- Nine `run:` bodies across four workflows no longer **interpolate a consumer-
+  or event-supplied value into shell script text**. `${{ ... }}` is substituted
+  into a `run:` body before the shell parses it, so an inlined value was
+  arbitrary shell source at execution time — with the job's `GITHUB_TOKEN` and
+  any in-scope secrets behind it. Every value now arrives through a step `env:`
+  variable: `lint.yml` (`extra-pip-packages`, `lint-paths`), `test.yml`
+  (`extra-pip-packages`, `cov-paths`, `coverage-floor`), `llm-pr-review.yml`
+  (`diff-exclude`) and `diff-coverage.yml` (the PR base SHA). Space-separated
+  list inputs are expanded **unquoted** — word splitting is their documented
+  contract, and parameter expansion results are never re-scanned for shell
+  operators — while single values are expanded **quoted**. No input name, type,
+  default or semantic changed: the same values reach the same tools
+  (issue #89, PR #94).
+
 ## [1.9.1] - 2026-09-28
 
 ### Changed
@@ -457,7 +500,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.1...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.2...HEAD
+[1.9.2]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.9...v1.9.0
 [1.8.9]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.8...v1.8.9
