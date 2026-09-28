@@ -1928,3 +1928,120 @@ why a registry update that flags old code is the intended behaviour.
   root cause (no deterministic gate reads the workflow YAML for this class),
   and the explicit non-goal of adding an external workflow linter.
 
+## D-0030 — Rules a consumer cannot satisfy are answered by the consumer, never by a hidden exclusion list
+
+- Date: 2026-09-28
+- Status: Accepted
+
+### Decision
+
+The `semgrep` gate keeps `auto` as its default configuration and the toolkit
+applies **no rule filtering of its own** — no vendored ruleset, no built-in
+`--exclude-rule` set, no default narrowing:
+
+1. **The consumer answers, from a documented set of three visible
+   mechanisms.** (a) Suppress the individual site with a verified
+   `# nosemgrep`; (b) drop the whole rule for a run with semgrep's own
+   `--exclude-rule=<rule id>` in the hook's `args`; (c) pass a narrower
+   `--config` (e.g. `p/python`, or a rules directory) to the hook's `args`
+   *and* to the composite's `semgrep-config` input, so both surfaces scan the
+   same rule set (D-0029). The choice is the consumer's, and each option is
+   visible in the command line or in the annotated line.
+2. **A registry rule that cannot be satisfied is an expected condition, not
+   an incident.** `auto` is unpinned, so the ruleset can gain a rule that
+   fires on a correct codebase without any change to that codebase. The
+   standing answer is one of the three mechanisms above; the toolkit does not
+   track the registry's rule inventory and does not pre-empt the finding.
+3. **The suppression contract has two conditions: the identifier and the
+   position.** A comment suppresses when the value written matches the rule as
+   semgrep reports it — the full id (which for registry rules repeats the last
+   path segment, e.g.
+   `python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected`),
+   or the bare form, which suppresses every rule matching on that line — and
+   when it sits at the end of the match's **first** line or on the line above
+   it. A **partial path into the id suppresses nothing, silently**, and an
+   annotation on the **closing** line of a multi-line call suppresses nothing
+   either, in either form: it is neither of the two accepted positions. That
+   second failure mode is one a formatter produces, so a suppression whose
+   line a formatter would wrap carries `# fmt: skip`. Verification is the
+   probe recipe the README documents.
+4. **Non-finding exit codes are documented, not inferred.** The README names
+   the codes semgrep uses for "not a finding" (2, 3, 4, 5, 7, 8, 13, 14, 99
+   against the single verdict code 1) together with the direct-binary recipe
+   for telling the two apart, because the gate reports a red check either way.
+
+### Rationale
+
+A toolkit-owned exclusion list was the obvious alternative and is rejected on
+three counts. It re-centralises a decision D-0029 has just handed to the
+consumer — the config is an input precisely because the toolkit cannot infer
+which ruleset a project needs. It is invisible at the point of use, so a rule
+that stopped firing would leave no trace in the diff: that is the same
+false-confidence class the Semgrep section was written to close, where "green"
+means "the rule set we happened to run was satisfied" rather than "the code is
+clean". And the toolkit is not in a position to arbitrate *unsatisfiable*: the
+rules in question are legitimate findings in other codebases, so a central
+exclusion fixes one consumer by blinding the rest.
+
+`--exclude-rule` is recorded as the preferred mechanism for whole-rule
+exclusion because it is visible in the invocation, applies once rather than
+per site, and survives reformatting — a `nosemgrep` comment can be moved or
+lost by an edit, and its failure mode is silence.
+
+Two premises previously recorded in this repository were re-probed while
+writing this entry and **did not reproduce**. (a) The belief that the
+annotation must sit on the same line as the match, established while the
+hooks were added, is wrong: a full id on the line above suppresses a
+multi-line call; what failed there was the identifier, not the placement.
+(b) The later correction that `dynamic-urllib-use-detected` fires only on
+`urlopen(Request(...))` and leaves a literal URL alone is also wrong: all
+three shapes fire (literal, module constant, `Request` object). Both were
+measured against semgrep 1.177.0 with `--config=auto`. The lesson recorded
+with the decision is that a suppression experiment which varies the placement
+and the identifier at the same time produces a conclusion about neither.
+
+### Consequences
+
+- The README's Semgrep section gains the exit-code table, the direct-binary
+  diagnosis recipe, an affirmative prohibition on `--quiet` with a registry
+  config (it leaves exit code 7 with no message), the three answers above, and
+  the suppression matrix with the probe recipe.
+- The toolkit's own two suppressions carry the full rule ids, so the
+  documented form and the code agree; a partial-path id is now a documented
+  silent no-op rather than an accepted style.
+- A consumer that needs a different rule set has one documented lever, and
+  D-0029 keeps the local and CI surfaces equal.
+- Residual, stated rather than fixed: an `auto` ruleset can still add a rule
+  that fails a consumer's build on an unrelated PR. That is the intended
+  behaviour of a live ruleset; the remedies are the three mechanisms, and the
+  consumer is the one who can tell a false positive from a real finding.
+
+### Amendments
+
+None.
+
+### Inspiration & References
+
+- Issue #51 — the consolidated slice (with #52 and #65 folded in): the
+  exit-code gap, the unsatisfiable-rule policy, and the undocumented
+  suppression contract.
+- [Semgrep — Ignore files, folders, and code](https://semgrep.dev/docs/ignoring-files-folders-code)
+  — `nosemgrep` placement ("the first line or the line preceding"),
+  `rule-id` syntax, and the statement that rule ids are referenced with their
+  namespace.
+- [Semgrep — CLI reference, Exit codes](https://semgrep.dev/docs/cli-reference)
+  — the code list this entry's README table is taken from, including
+  `--exclude-rule` and the `--strict` condition on code 3.
+- Probes run for this entry (semgrep 1.177.0, `--config=auto`): a five-variant
+  multi-line `urlopen` file isolating placement from identifier, a six-variant
+  file covering the three `urlopen` shapes plus the logger rule's
+  credential-word trigger, and a two-variant file placing the annotation on the
+  **closing** line of a wrapped call (both forms fire).
+- D-0029 — the consumer-owned `semgrep-config` input and the pinned scanner
+  versions, which this entry must not contradict.
+- D-0025 — the ruleset-fetch retry whose exit-code reasoning ("the retry
+  cannot depend on the message") is what makes the `--quiet` prohibition
+  load-bearing.
+- D-0010 — the secret scanner's deliberate refusal of inline suppression, the
+  precedent for stating the two gates' answers separately.
+

@@ -69,10 +69,24 @@ class TestFactoryResolution:
         assert cfg["fallback_model"] is None
         assert cfg["max_tokens"] == judge_config.DEFAULT_MAX_TOKENS
 
-    def test_omitted_max_tokens_resolves_to_the_toolkit_default(self, tmp_path):
+    def test_omitted_max_tokens_resolves_to_the_toolkit_default(self, tmp_path, capsys):
         _write_factory(tmp_path, {"syntax_lint": {"model": "vendor/model-a"}})
         cfg = judge_config.resolve_model_config("syntax_lint")
         assert cfg["max_tokens"] == judge_config.DEFAULT_MAX_TOKENS
+        # An absent key is "not configured", not a malformation: no warning.
+        assert "[WARN]" not in capsys.readouterr().err
+
+    def test_explicit_null_max_tokens_resolves_silently(self, tmp_path, capsys):
+        # A JSON ``null`` is indistinguishable from an omitted key through
+        # ``dict.get`` and means the same thing, so it takes the same silent
+        # path — only genuinely malformed values warn (D-0028's boundary).
+        _write_factory(
+            tmp_path,
+            {"syntax_lint": {"model": "vendor/model-a", "max_tokens": None}},
+        )
+        cfg = judge_config.resolve_model_config("syntax_lint")
+        assert cfg["max_tokens"] == judge_config.DEFAULT_MAX_TOKENS
+        assert "[WARN]" not in capsys.readouterr().err
 
     @pytest.mark.parametrize("bad_value", [0, -1, 1.5, "8192", True, False])
     def test_invalid_max_tokens_warns_and_uses_the_default(

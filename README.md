@@ -520,9 +520,11 @@ output ceiling (observed: 131,072 tokens over ~23 min, empty content):
   the toolkit default **32768**: observed judge completions (reasoning
   included) on a ~2.2k-line diff run 0.8k–12.2k tokens, so the default
   keeps ~2.5x headroom while bounding a runaway call to minutes.
-- Invalid values (`0`, negative, float, string) warn and fall back to the
-  default — a malformed config value can never remove the bound. The
-  resolved value is logged with the rest of the judge config.
+- Invalid values (`0`, negative, float, string, bool) warn and fall back to
+  the default — a malformed config value can never remove the bound. An
+  omitted key and an explicit `null` are both "not configured" rather than
+  malformed: each resolves to the default silently. The resolved value is
+  logged with the rest of the judge config.
 - The value must fit the model's context: OpenRouter rejects a request
   whose prompt plus `max_tokens` exceeds the context length (HTTP 400,
   non-retryable). The 32768 default leaves room for the ~28k-token prompts
@@ -712,7 +714,7 @@ Hook ownership split (D-0016) — version ownership follows dependency need:
 |---|---|---|---|
 | `secret-scan` | `python` | toolkit-pinned | stdlib scanner in the isolated hook env; no consumer venv needed. |
 | `mypy` | `system` | consumer-owned | runs `mypy` from your project environment; pass target paths via `args` (e.g. `args: ["src/"]`). |
-| `semgrep` | `python` | toolkit-pinned (`semgrep==1.177.0`) | runs the toolkit's `semgrep-scan` wrapper — `semgrep scan` plus the ruleset-fetch retry (D-0025, see [Semgrep ruleset fetch](#semgrep-ruleset-fetch)); supply `--config` and paths via `args`. |
+| `semgrep` | `python` | toolkit-pinned (`semgrep==1.177.0`) | runs the toolkit's `semgrep-scan` wrapper — `semgrep scan` plus the ruleset-fetch retry (D-0025, see [Semgrep ruleset fetch](#semgrep-ruleset-fetch)); supply `--config` and paths via `args`. Do **not** add `--quiet` there: with a registry config it hides the cause of a failed fetch (see [Semgrep ruleset fetch](#semgrep-ruleset-fetch)). |
 | `pip-audit` | `python` | toolkit-pinned (`pip-audit==2.10.1`) | supply arguments via `args` (e.g. `-r requirements.txt`). |
 | `js-typecheck` / `js-test` / `js-lint` | `system` | consumer-owned | fixed npm scripts, full-project (see [JavaScript / TypeScript gates](#javascript--typescript-gates)). |
 
@@ -778,6 +780,99 @@ plus a bounded retry of the *configuration* load.
   [Troubleshooting](#troubleshooting) describes).
 - **Offline environments** pay the retry bound once and then fail as
   before: the gate is still closed, just delayed by ~7 s.
+
+**Exit codes that are not findings.** With `--error`, exit 1 is the only code
+that means "your code"; the rest are scanner or configuration problems:
+
+| Code | Meaning |
+|---|---|
+| 1 | Findings (the only code that carries a verdict). |
+| 2 | Fatal error — a crash, not a verdict. |
+| 3 | Invalid syntax of the scanned language; only under `--strict`. |
+| 4 | Invalid pattern in a rule. |
+| 5 | Configuration is not valid YAML. |
+| 7 | Missing or invalid configuration — including a failed registry fetch (above). |
+| 8 | Unknown language. |
+| 13 | Invalid API key. |
+| 14 | Deprecated; the scan failed. |
+| 99 | Not implemented in the current engine. |
+
+To tell a configuration problem from a finding, run the hook environment's own
+binary directly — the wrapper is a thin passthrough, so the scan you get by
+hand is the scan CI runs:
+
+```bash
+~/.cache/pre-commit/repo*/py_env-python3.12/bin/semgrep scan \
+    --config=auto --error <path>
+```
+
+**Do not pass `--quiet` together with a registry config.** It suppresses
+semgrep's diagnostics while leaving the exit code unchanged, so a failed fetch
+reaches you as `exit code 7` with no explanation — the one case this section
+exists to make diagnosable. The wrapper's retry keys on the exit code for
+exactly that reason; it cannot restore a message you suppressed.
+
+**Rules a consumer cannot satisfy (D-0030).** `auto` is a registry ruleset, so
+it contains rules that fire on code which is correct in your project: a
+literal `https://` URL handed to `urllib.request.urlopen` is flagged by
+`dynamic-urllib-use-detected` in all three call shapes (literal, constant,
+`Request` object), and `python-logger-credential-disclosure` fires on any log
+call whose format string carries a credential-shaped word, from three
+interpolated values upwards (measured, not threshold-guessed). Three answers,
+all of them yours to pick — D-0030 records why the toolkit ships no exclusion
+list of its own:
+
+- **Suppress the site** and keep `auto` — per-site, visible, verifiable (see
+  *Suppressing a finding* below).
+- **Exclude the rule** — the hook takes semgrep's own
+  `--exclude-rule=<rule id>` in `args`, which drops that rule for the whole
+  run. The right tool when every occurrence is a false positive.
+- **Narrow the config** — pass e.g. `p/python` or your own rules directory to
+  the hook's `args` *and* to the composite's `semgrep-config` input, so both
+  surfaces scan the same rule set (D-0029).
+
+Because `auto` is unpinned, the registry can add an unsatisfiable rule
+tomorrow with no change to your code — that is retroactive coverage working,
+and the answer is one of the three above. The toolkit deliberately ships no
+hidden exclusion list: a scan that quietly drops rules is the
+false-confidence case this whole section is about.
+
+**Suppressing a finding.** `# nosemgrep` is per-site, and when it does not
+match it fails **silently** — the finding reappears with no hint that the
+annotation was ineffective. Two things must be right: the identifier, and
+where it sits. Both were measured on semgrep 1.177.0 with `--config=auto`, on
+a multi-line call:
+
+| Annotation | Where | Effect |
+|---|---|---|
+| plain `# nosemgrep` | end of the match's first line, or the line above it | suppresses every rule matching there |
+| `# nosemgrep: <the id semgrep printed>` | same two positions | suppresses that rule — the recommended form |
+| `# nosemgrep: <a partial path into the id>` | any position | **nothing, silently** |
+| either form | on the **closing** line of a multi-line call | **nothing** — measured; both forms still fire |
+
+The doubled-looking id is not a typo: for registry rules semgrep prints the
+rule's path *plus* its name, and the name repeats the last path segment. Copy
+the id exactly as the finding shows it. A bare `# nosemgrep` suppresses
+everything on that line, which is why it is worth avoiding where a newly
+added rule should be noticed rather than swallowed.
+
+The closing-line row is the one that bites in practice, because it is what a
+formatter produces: a long rule id pushes the line past the configured width,
+`ruff format` wraps the call, and the annotation ends up after the `)`. Pin it
+where it was verified with `# fmt: skip` on the match's first line — both
+suppressions in this toolkit's own source are written that way.
+
+Verify a suppression the way you verify the rule: build a throwaway file with
+three or four variants of the call (annotation above, at the end of the
+match's first line, and one bare control), `git add -N` it — a `--config=auto`
+scan skips **untracked** files, reporting "Scan was limited to files tracked
+by git" and zero findings, which looks exactly like a working suppression —
+scan it, read which variants fired, then delete the probe.
+
+The **secret-scan** gate accepts no inline suppression at all, by design: a
+consumer-side skip mechanism would weaken a scanner whose job is to be
+inconvenient. The two gates answer differently, so do not assume a semgrep
+annotation touches secret-scan — see [Troubleshooting](#troubleshooting).
 
 Two loud-fail paths to expect:
 
@@ -859,6 +954,16 @@ Two loud-fail paths to expect:
   passes — see [Semgrep ruleset fetch](#semgrep-ruleset-fetch). If you
   passed `--quiet` in the hook `args`, drop it to see semgrep's own
   `[ERROR] Failed to download configuration …` line.
+- **Semgrep failed with an exit code other than 1** — 1 is the only code
+  that means "findings"; every other one is a scanner or configuration
+  problem. The code table under [Semgrep ruleset
+  fetch](#semgrep-ruleset-fetch) names each of them, together with the
+  direct-binary recipe that separates the two.
+- **A `# nosemgrep` annotation has no effect** — the finding reappears and
+  semgrep says nothing. The usual cause is the identifier rather than the
+  placement: a partial path into the rule id suppresses nothing, silently.
+  Copy the id exactly as the finding prints it, and check it with the probe
+  recipe under [Semgrep ruleset fetch](#semgrep-ruleset-fetch).
 - **secret-scan false positive** — there is deliberately no inline
   suppression (a consumer-side skip mechanism would weaken the scanner).
   Token-shape fixes (e.g. the npm integrity-hash suppression, D-0010) ship

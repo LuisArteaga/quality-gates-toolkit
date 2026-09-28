@@ -56,7 +56,7 @@
   always_run: true
 - id: semgrep
   name: quality-gates-toolkit semgrep
-  description: Runs pinned semgrep scan in an isolated environment (consumer supplies --config and paths via args). The ruleset is fetched from semgrep.dev at run time; a failed fetch is retried a bounded number of times (D-0025).
+  description: Runs pinned semgrep scan in an isolated environment (consumer supplies --config and paths via args; do not add --quiet with a registry config — it hides the cause of a failed ruleset fetch). The ruleset is fetched from semgrep.dev at run time; a failed fetch is retried a bounded number of times (D-0025).
   entry: semgrep-scan
   language: python
   language_version: python3.12

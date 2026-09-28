@@ -451,7 +451,7 @@ def call_openrouter_api(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=300) as response:  # nosemgrep  # fmt: skip
+        with urllib.request.urlopen(req, timeout=300) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected  # fmt: skip
             return response.status, response.read().decode("utf-8")
     except urllib.error.HTTPError as error:
         raise OpenRouterHTTPError(error) from error
