@@ -50,6 +50,18 @@ permissions:
 A nested reusable workflow can narrow but never elevate the caller's token
 scope.
 
+**The LLM review is the only gate that needs a secret.** Setting
+`enable-llm-review: true` is what makes the `secrets:` block above
+load-bearing: the calling job must forward `openrouter-api-key` from a
+repository secret (convention `OPENROUTER_API_KEY`). Without it the judge
+check fails within seconds — before the toolkit is even downloaded —
+printing the exact block to add. **No GitHub PAT is required:** the review is
+posted by `github-actions[bot]` as a comment review and the judge check's
+exit code is the merge gate; `judge-token` is optional and only for
+consumer-side integration models (see [Secrets](#secrets)). Forwarding both
+unconditionally is safe — a declared but unset secret evaluates to empty,
+which is exactly the tokenless default.
+
 Language composites (D-0020) are the skip-free variant for single-language
 repositories — same defaults, one language:
 
@@ -59,10 +71,14 @@ jobs:
     uses: LuisArteaga/quality-gates-toolkit/.github/workflows/python-checks.yml@v1.9.0
     with:
       coverage-floor: 80
+      # enable-llm-review: true     # then the secret below is required
+    secrets:
+      openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
 `js-checks.yml` takes no `coverage-floor` (no coverage artifact contract):
-its three JS gates default ON, plus secret scan on and the LLM review off.
+its three JS gates default ON, plus secret scan on and the LLM review off —
+turning that review on there takes the same `openrouter-api-key` forward.
 
 For repositories that are not Python-only, the
 [Which entry point?](#which-entry-point) table maps your language mix to the
@@ -172,6 +188,15 @@ gates still expect the *caller* project to be self-contained:
 - **Judge config** (optional): `config/factory.json` relative to the caller
   root. A missing or malformed file is not fatal — judges fall back to the
   toolkit default model and log a `[WARN]`.
+- **Judge secrets** (only when `enable-llm-review: true`): forward
+  `secrets: openrouter-api-key` from the calling job. GitHub cannot make a
+  secret conditionally required on an input, so the judge workflow validates
+  it at run time and fails fast — before its checkouts — naming the block to
+  add. **No GitHub PAT is required:** the review is posted by
+  `github-actions[bot]` as a comment review and the judge check's exit code
+  is the merge gate (D-0005). Forwarding `judge-token` alongside it is safe
+  even when that secret is unset; it is needed only for consumer-side
+  integration models (see [Secrets](#secrets)).
 
 ## Which entry point?
 
@@ -768,6 +793,12 @@ Two loud-fail paths to expect:
 - **Judges falsely report "tests missing" on a large PR** — the diff was
   split into batches and the tests landed in a different batch than the
   changed files. Raise `batch-budget-chars` (e.g. `500000`).
+- **Judge check red within seconds: "openrouter-api-key secret not
+  configured"** — the review is enabled but the calling job forwards no key.
+  Add the `secrets:` block the message prints
+  (`openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}`); no PAT is
+  needed. The job fails before checking out the toolkit, so that log is
+  short by design.
 - **Review job red, but the posted review carries no findings** — the judge
   transport failed (typically OpenRouter HTTP 429). Retries consume
   `REVIEW_RETRY_BUDGET_SECONDS` (default 45 min); rerun the failed job once

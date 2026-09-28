@@ -163,6 +163,22 @@ their integration docs, not in the generic workflow contract.
   documented as a review-run environment variable, and the token contract is
   pinned by tests (absence fails, `GH_PAT` neither authenticates nor
   overrides).
+- 2026-09-28 (#48): The `openrouter-api-key` requirement is stated where the
+  entry point is chosen, not only in the *Secrets* reference: the README
+  quick start and *Caller prerequisites* now say that
+  `enable-llm-review: true` requires forwarding `openrouter-api-key`, and
+  that no PAT is needed for the review to be posted (the reporting premise
+  predated #43). The judge workflow's fail-fast validation runs BEFORE its
+  checkouts, so a caller missing the secret gets a seconds-long red check
+  whose message names the caller-side fix (the `secrets:` block to add)
+  rather than a symptom; that block is assembled at run time from a `brace`
+  variable because interpolating a secrets-context expression into script
+  text would print the real key into the log. The optional composite-level
+  pre-flight job was decided against — a job in a workflow file always
+  renders as a check, so it would add a permanent `Skipped` entry to every
+  composite caller whose review is off (the default), against the skip-free
+  discipline of D-0019/D-0020, while gaining only seconds over the early
+  validation.
 
 ## D-0006 — Hybrid workflow architecture
 

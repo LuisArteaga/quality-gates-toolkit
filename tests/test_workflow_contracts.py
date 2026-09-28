@@ -16,7 +16,8 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   coverage-floor is a REQUIRED policy input.
 - D-0005 secrets contract: explicit forwarding only — no blanket secret
   propagation (`secrets: inherit`) anywhere; optional judge-token with
-  github.token fallback, fail-fast OpenRouter validation.
+  github.token fallback, fail-fast OpenRouter validation as the judge job's
+  first step (before any checkout) with the caller-side fix named (#48).
 - D-0007 tagged execution: third-party actions SHA-pinned; coverage.json
   handed from test.yml to diff-coverage.yml as an artifact.
 - D-0012 JS gates: the harness owns the environment, the project owns the
@@ -333,9 +334,61 @@ def test_judge_token_is_optional_with_github_token_fallback():
     assert "${{ secrets.judge-token || github.token }}" in raw
 
 
+def _judge_validation_step() -> dict[str, Any]:
+    return _jobs(_load("llm-pr-review.yml"))["llm-pr-review"]["steps"][0]
+
+
 def test_llm_review_validates_openrouter_key_before_use():
-    raw = (WORKFLOWS / "llm-pr-review.yml").read_text()
-    assert "openrouter-api-key secret not configured" in raw
+    """D-0005 / #48: the validation is the job's FIRST step, so a caller
+    missing the secret fails in seconds — before either checkout downloads
+    anything — instead of after the toolkit install."""
+    step = _judge_validation_step()
+    assert step["name"] == "Validate judge configuration"
+    assert "openrouter-api-key secret not configured" in step["run"]
+
+
+def test_llm_review_validates_the_key_before_the_checkouts():
+    steps = _jobs(_load("llm-pr-review.yml"))["llm-pr-review"]["steps"]
+    first_checkout = next(i for i, s in enumerate(steps) if "uses" in s)
+    assert first_checkout > 0, "validation must precede every checkout"
+    assert steps[0]["name"] == "Validate judge configuration"
+
+
+def test_llm_review_fail_fast_message_names_the_caller_side_fix():
+    """#48: the message must be self-sufficient — it prints the `secrets:`
+    block to add and points at the README, so a consumer never has to read
+    this workflow to wire the secret."""
+    run = _judge_validation_step()["run"]
+    assert "openrouter-api-key:" in run
+    assert "README" in run
+
+
+def test_llm_review_fail_fast_message_never_interpolates_the_key():
+    """A secrets-context expression in script text is substituted before the
+    shell parses it, so echoing the snippet literally would print the real
+    key into the job log. The snippet is assembled at run time instead, which
+    leaves the step's script free of any expression."""
+    run = _judge_validation_step()["run"]
+    assert "${{" not in run
+
+
+def test_readme_states_the_judge_secret_requirement_at_the_entry_point():
+    """#48: the requirement belongs where the caller chooses the entry point —
+    the quick start and the caller prerequisites — not only in the Secrets
+    reference a quick-start reader never reaches."""
+    readme = (WORKFLOWS.parent.parent / "README.md").read_text()
+    quick_start = readme.split("## Quick start (composite)")[1].split("## Components")[
+        0
+    ]
+    assert "openrouter-api-key" in quick_start
+    assert "enable-llm-review" in quick_start
+    assert "No GitHub PAT is required" in quick_start
+    assert "unconditionally" in quick_start
+    prerequisites = readme.split("## Caller prerequisites")[1].split(
+        "## Which entry point?"
+    )[0]
+    assert "openrouter-api-key" in prerequisites
+    assert "No GitHub PAT is required" in prerequisites
 
 
 # ---------------------------------------------------------------------------

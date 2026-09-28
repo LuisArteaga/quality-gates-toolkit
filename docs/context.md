@@ -14,7 +14,12 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   one combined GitHub review carrying the versioned hidden verdict block.
   Posting needs no consumer PAT: without `judge-token` the review is a
   comment review by `github-actions[bot]` with the identical body, and the
-  check's exit code is the merge gate (D-0005).
+  check's exit code is the merge gate (D-0005). The review path's only
+  required secret is `openrouter-api-key`, and that requirement is stated
+  where the entry point is chosen: the judge workflow validates the secret
+  before its checkouts (a seconds-long red check naming the caller-side fix),
+  and the README says it in the quick start and the caller prerequisites
+  (D-0005).
   A verdict is read from the `<findings>` block the judge prompt asks for: the
   block has to be PRESENTED as a block (a tag quoted inside a sentence is
   prose about the format, not a verdict), an answer without a readable block
