@@ -10,6 +10,33 @@ Each section below is mirrored verbatim into the matching
 (D-0018). Release 1.5.0 was never cut: its content shipped in the combined
 1.6.0 release.
 
+## [1.9.3] - 2026-09-28
+
+Carries the judge job's token-capability probe (issue #92). The workflow, test
+and decision-record changes themselves landed on `main` in **PR #98**; what the
+release train adds is the pin bump to `v1.9.3` and this section.
+
+### Fixed
+
+- The judge job's fail-fast step no longer calls `gh auth status`, which
+  *reports* status rather than gating on it: it exits 0 even for an invalid
+  token, so the step's only real gates were its presence checks — and a caller
+  whose token could not reach the repository paid for the whole judge run
+  before the review submission was refused. The step now probes the caller
+  repository with the token and fails in seconds, naming the scopes to grant,
+  the tokenless escape hatch and the README, so the caller never has to read
+  the toolkit's workflow sources to get unblocked (issue #92, PR #98).
+
+### Changed
+
+- The step's own output states the boundary it cannot check: pull-requests
+  **write** capability is deliberately not pre-validated, because no cheap
+  probe for it exists — a repository's permission view reports the
+  authenticated user's role rather than a fine-grained token's granted scopes.
+  That case keeps the undelivered-body artifact (D-0024) as its diagnosis, and
+  the boundary is recorded in D-0005 (amended) and stated in the README where
+  the secret is documented.
+
 ## [1.9.2] - 2026-09-28
 
 Carries the workflow script-injection fix (issue #89). The code, test and
@@ -503,7 +530,8 @@ shipped in 1.6.0 (`pyproject.toml` documents the skip).
   `toolkit-ref` defaults (D-0007), and the ADR-lite decision log
   (D-0001–D-0006).
 
-[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.2...HEAD
+[unreleased]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.3...HEAD
+[1.9.3]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.2...v1.9.3
 [1.9.2]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/LuisArteaga/quality-gates-toolkit/compare/v1.8.9...v1.9.0
