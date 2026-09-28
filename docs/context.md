@@ -46,9 +46,13 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
   pins and a workflow cannot import them (D-0029) — and the ruleset is a
   consumer input (`semgrep-config`, default `auto`) rather than hardcoded
   YAML, so a CI scan can be configured to match the local hook exactly.
-  Consumer-supplied values reach that step's shell through the environment,
-  never inlined into the generated script, so a caller cannot turn an input
-  into command execution. The
+  No `run:` script in the collection interpolates a consumer or event value:
+  `${{ ... }}` is substituted into script text before the shell parses it, so
+  every such value reaches the shell through a step `env:` variable instead
+  (list inputs expanded unquoted — word splitting is their contract — and
+  single values quoted), and a contract test sweeps every `run:` body for the
+  untrusted families (`inputs.*`, `github.event*`, `github.head_ref`) so the
+  class cannot return with the next workflow edit (D-0029). The
   ruleset itself stays live: pinning the engine does not pin the registry
   config, and re-scanning old code with new rules is the intended behaviour.
 - `judge_config.py` resolves per-judge model/routing configuration, validating

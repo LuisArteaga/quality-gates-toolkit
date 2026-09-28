@@ -148,6 +148,16 @@ the JS micro-workflows directly — see
 | `js-typecheck.yml` | Runs the caller's `npm run typecheck` under the same JS harness contract. |
 | `js-lint.yml` | Runs the caller's `npm run lint` under the same JS harness contract. |
 
+**Workflow authoring invariant (D-0029):** no `run:` script in this
+collection interpolates a consumer- or event-supplied value. `${{ ... }}` is
+substituted into the script *before* the shell parses it, so an inlined value
+is arbitrary shell source at execution time; every such value reaches the
+shell through a step `env:` variable instead — space-separated list inputs
+expanded **unquoted** (word splitting is their contract), single values
+quoted. A contract test sweeps every workflow's `run:` bodies and fails on a
+new `${{ inputs.* }}` / `${{ github.event* }}` / `${{ github.head_ref }}`
+interpolation, so the class cannot be reintroduced by the next workflow edit.
+
 ### Python tooling (`scripts/` + `quality_gates_toolkit/`)
 
 The importable `quality_gates_toolkit` package is the judge-engine

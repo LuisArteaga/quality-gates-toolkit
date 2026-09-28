@@ -68,6 +68,11 @@ jobs:
         # (or without a usable dev extra) keep a viable lint environment via
         # the runtime-only fallback.
         working-directory: repo
+        env:
+          # Consumer input: reaches the shell through the environment, never
+          # interpolated into the script text. Unquoted on purpose — a
+          # space-separated list whose words must split (#89 / D-0029).
+          EXTRA_PIP_PACKAGES: ${{ inputs.extra-pip-packages }}
         run: |
           pip install --upgrade pip
           if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
@@ -75,19 +80,29 @@ jobs:
           else
             echo "No build metadata found; mypy runs against the bare environment."
           fi
-          for pkg in ${{ inputs.extra-pip-packages }}; do
+          for pkg in $EXTRA_PIP_PACKAGES; do
             if [ "$pkg" = "none" ]; then continue; fi
             pip install "$pkg"
           done
 
       - name: Ruff lint
         working-directory: repo
-        run: ruff check ${{ inputs.lint-paths }}
+        env:
+          # Consumer input: env-routed, unquoted — a space-separated list
+          # whose words must split into separate path arguments (#89 / D-0029).
+          LINT_PATHS: ${{ inputs.lint-paths }}
+        run: ruff check $LINT_PATHS
 
       - name: Ruff format check
         working-directory: repo
-        run: ruff format --check ${{ inputs.lint-paths }}
+        env:
+          # Same rule as the Ruff lint step (#89 / D-0029).
+          LINT_PATHS: ${{ inputs.lint-paths }}
+        run: ruff format --check $LINT_PATHS
 
       - name: Mypy typecheck
         working-directory: repo
-        run: mypy ${{ inputs.lint-paths }}
+        env:
+          # Same rule as the Ruff lint step (#89 / D-0029).
+          LINT_PATHS: ${{ inputs.lint-paths }}
+        run: mypy $LINT_PATHS
