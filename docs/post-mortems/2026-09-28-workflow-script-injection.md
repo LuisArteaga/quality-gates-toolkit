@@ -1,7 +1,9 @@
 # Post-mortem: consumer and event values interpolated into workflow `run:` scripts
 
 **Date:** 2026-09-28
-**Status:** draft — fix in PR #94, awaiting merge
+**Status:** resolved — the fix is merged into `main` as PR #94 (merge commit
+`dd37fb1`); this document landed with the v1.9.2 release PR, which adds only
+the version pins and the release notes.
 **Severity:** medium
 **Detected by:** the LLM `security` judge on PR #88 (iteration 1), which flagged
 the site that diff introduced and classified the pre-existing sibling as out of
@@ -101,7 +103,9 @@ scoped to a diff.
 
 ## What changed
 
-PR #94 (`fix/workflow-script-injection`, commit `58193fe`):
+PR #94 (`fix/workflow-script-injection`, commit `58193fe`, merge commit
+`dd37fb1`) — already on `main`, so it is not part of the v1.9.2 release PR's
+diff, and the tag cut at that release's merge commit publishes it:
 
 - All nine sites route their values through step `env:` — space-separated list
   inputs (`lint-paths`, `cov-paths`, `extra-pip-packages`, `diff-exclude`)

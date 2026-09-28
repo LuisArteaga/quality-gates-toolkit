@@ -12,6 +12,11 @@ Each section below is mirrored verbatim into the matching
 
 ## [1.9.2] - 2026-09-28
 
+Carries the workflow script-injection fix (issue #89). The code, test and
+decision-record changes themselves landed on `main` in **PR #94**; what the
+release train adds is the pin bump to `v1.9.2`, this section, and
+`docs/post-mortems/2026-09-28-workflow-script-injection.md`.
+
 ### Added
 
 - A contract test that **parses every workflow and fails when a `run:` body
@@ -44,14 +49,12 @@ Each section below is mirrored verbatim into the matching
   into a `run:` body before the shell parses it, so an inlined value was
   arbitrary shell source at execution time — with the job's `GITHUB_TOKEN` and
   any in-scope secrets behind it. Every value now arrives through a step `env:`
-  variable: `lint.yml` (`extra-pip-packages`, `lint-paths`), `test.yml`
-  (`extra-pip-packages`, `cov-paths`, `coverage-floor`), `llm-pr-review.yml`
-  (`diff-exclude`) and `diff-coverage.yml` (the PR base SHA). Space-separated
-  list inputs are expanded **unquoted** — word splitting is their documented
-  contract, and parameter expansion results are never re-scanned for shell
-  operators — while single values are expanded **quoted**. No input name, type,
-  default or semantic changed: the same values reach the same tools
-  (issue #89, PR #94).
+  variable instead. Space-separated list inputs are expanded **unquoted** —
+  word splitting is their documented contract, and parameter expansion results
+  are never re-scanned for shell operators — while single values are expanded
+  **quoted**. No input name, type, default or semantic changed: the same values
+  reach the same tools (issue #89, PR #94; the per-site inventory is in the
+  post-mortem document).
 
 ## [1.9.1] - 2026-09-28
 
