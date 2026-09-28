@@ -179,6 +179,29 @@ their integration docs, not in the generic workflow contract.
   composite caller whose review is off (the default), against the skip-free
   discipline of D-0019/D-0020, while gaining only seconds over the early
   validation.
+- 2026-09-28 (#92): Presence is not capability, so the judge job's fail-fast
+  step probes the token instead of reporting on it. `gh auth status` prints
+  `The token in GH_TOKEN is invalid.` and still exits **0** (verified with an
+  isolated `GH_CONFIG_DIR` — the CI shape — and with a populated
+  `hosts.yml`), so the step's only real gates were its `-z` checks: a caller
+  whose PAT was expired, or lacked access to the caller repository, passed
+  validation and paid for the whole judge run before `gh pr review` refused
+  it. The step now runs `gh api --silent /repos/$GITHUB_REPOSITORY` and fails
+  in seconds with a message naming the scopes to grant, the tokenless escape
+  hatch and the README. Pull-requests *write* capability is deliberately NOT
+  pre-validated, and that is the part worth recording: no cheap probe for it
+  exists. A repository's `.permissions` reports the authenticated user's role
+  rather than a fine-grained PAT's granted scopes (a read-only fine-grained
+  PAT owned by an admin still shows `push: true`), `X-OAuth-Scopes` is absent
+  for fine-grained tokens, and the endpoints that *do* require
+  `pull_requests: write` (requested reviewers, review creation) mutate state —
+  so gating on any of them would pass the very case at issue. The step
+  therefore states the boundary in its own output, and the un-validated case
+  keeps D-0024's artifact as its diagnosis. Repository read is a strict
+  prerequisite of `gh pr review`, so the probe cannot fail a token that could
+  have posted the review, and `GITHUB_REPOSITORY` (a runner-provided
+  variable) is used rather than an expression, keeping the step script
+  expression-free (D-0029).
 
 ## D-0006 — Hybrid workflow architecture
 

@@ -18,6 +18,11 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   propagation (`secrets: inherit`) anywhere; optional judge-token with
   github.token fallback, fail-fast OpenRouter validation as the judge job's
   first step (before any checkout) with the caller-side fix named (#48).
+- D-0005 (#92): presence is not capability, so the same fail-fast step probes
+  that the token can reach the caller repository — `gh auth status` exits 0
+  even for an invalid token and therefore gates nothing — and states in its
+  own output that pull-requests *write* capability is deliberately not
+  pre-validated.
 - D-0007 tagged execution: third-party actions SHA-pinned; coverage.json
   handed from test.yml to diff-coverage.yml as an artifact.
 - D-0012 JS gates: the harness owns the environment, the project owns the
@@ -45,7 +50,10 @@ recorded in DECISIONS.md. A workflow edit that violates any of them fails
   class-wide sweep fails the suite when one is reintroduced.
 """
 
+import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -343,6 +351,41 @@ def _judge_validation_step() -> dict[str, Any]:
     return _jobs(_load("llm-pr-review.yml"))["llm-pr-review"]["steps"][0]
 
 
+def _run_judge_validation_step(
+    *, gh_exit_code: int, gh_token: str = "a-token"
+) -> tuple[int, str, str]:
+    """Execute the validation step's script with a stubbed `gh`.
+
+    The step is shell text, so matching on its wording is not evidence that it
+    gates anything — run it. Returns (exit code, combined output, the
+    arguments the stub received), which is what pins AC-2: a usable token
+    leaves the step green.
+    """
+    script = _judge_validation_step()["run"]
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = Path(tmp) / "gh"
+        arguments = Path(tmp) / "arguments"
+        stub.write_text(
+            f'#!/bin/sh\nprintf "%s " "$@" >> "{arguments}"\nexit {gh_exit_code}\n'
+        )
+        stub.chmod(0o755)
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            env={
+                **os.environ,
+                "PATH": f"{tmp}:{os.environ['PATH']}",
+                "OPENROUTER_API_KEY": "key",
+                "PR_NUMBER": "7",
+                "GH_TOKEN": gh_token,
+                "GITHUB_REPOSITORY": "o/r",
+            },
+            capture_output=True,
+            text=True,
+        )
+        called = arguments.read_text() if arguments.exists() else ""
+    return proc.returncode, proc.stdout + proc.stderr, called
+
+
 def test_llm_review_validates_openrouter_key_before_use():
     """D-0005 / #48: the validation is the job's FIRST step, so a caller
     missing the secret fails in seconds — before either checkout downloads
@@ -375,6 +418,51 @@ def test_llm_review_fail_fast_message_never_interpolates_the_key():
     leaves the step's script free of any expression."""
     run = _judge_validation_step()["run"]
     assert "${{" not in run
+
+
+def test_llm_review_probes_token_capability_instead_of_reporting_status():
+    """#92: `gh auth status` only REPORTS status — it exits 0 even for an
+    invalid token, so the step's "fail-fast auth check" gated nothing. The
+    step now probes an endpoint that fails, and gates on it. The assertion
+    pins the absence of the COMMAND, not of the phrase: the comment
+    explaining why it is gone names it."""
+    run = _judge_validation_step()["run"]
+    lines = [line.strip() for line in run.splitlines()]
+    assert not [line for line in lines if line.startswith("gh auth status")]
+    assert 'if ! gh api --silent "/repos/$GITHUB_REPOSITORY"' in run
+
+
+def test_llm_review_probes_the_token_after_the_presence_checks():
+    """#92: a missing token and an unusable one need different fixes, so the
+    presence checks keep their own messages and the probe never sees an empty
+    token (an empty GH_TOKEN would otherwise fail as a read error)."""
+    run = _judge_validation_step()["run"]
+    assert run.index('if [ -z "$GH_TOKEN" ]') < run.index("gh api --silent")
+    assert "$GITHUB_REPOSITORY" in run
+
+
+def test_llm_review_token_probe_failure_names_the_caller_side_fix():
+    """#92 AC-1: the red check names the fix itself — the scopes to grant, the
+    tokenless escape hatch and the README — so a caller never has to read the
+    toolkit's workflow sources to get unblocked."""
+    rc, output, _ = _run_judge_validation_step(gh_exit_code=1)
+    assert rc == 1
+    assert "judge-token cannot read o/r" in output
+    assert "Pull requests: Read and write" in output
+    assert "public_repo" in output
+    assert "github-actions[bot]" in output
+    assert "README" in output
+
+
+def test_llm_review_token_probe_passes_for_a_usable_token():
+    """#92 AC-2: a token that can reach the caller repository — the
+    installation-token default and a valid PAT alike — leaves the step green.
+    The probe asks for the caller repository, which on a pull_request event is
+    the PR's base repository, i.e. where the review is posted."""
+    rc, output, called = _run_judge_validation_step(gh_exit_code=0)
+    assert rc == 0, output
+    assert called.strip() == "api --silent /repos/o/r"
+    assert "Pull-requests write capability is not pre-validated" in output
 
 
 def test_readme_states_the_judge_secret_requirement_at_the_entry_point():
