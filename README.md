@@ -319,6 +319,7 @@ centrally — composing micro-workflows yourself means re-implementing it.
 | `prefetch-tree-sitter` | boolean | `false` | Cache and prefetch tree-sitter parsers (callers whose tests parse code). |
 | `enable-lint`, `enable-test`, `enable-security` | boolean | `true` | Python gate group toggles. |
 | `enable-semgrep`, `enable-pip-audit` | boolean | `true` | Sub-toggles inside the security gate. |
+| `semgrep-config` | string | `"auto"` | Semgrep configuration for the CI scan (`--config=<value>`). Pass the value your local `semgrep` hook uses (e.g. `p/security-audit`) for CI/local parity — see [Semgrep ruleset fetch](#semgrep-ruleset-fetch). |
 | `enable-secret-scan` | boolean | `true` | Toolkit secret scanner (language-agnostic, always available). |
 | `enable-diff-gate` | boolean | `true` | 100% changed-line coverage (pull_request events only). |
 | `enable-js-lint`, `enable-js-test`, `enable-js-typecheck` | boolean | `false` | JS gate group (needs a `package-lock.json`). |
@@ -349,6 +350,7 @@ gates ON (the caller chose that entry point); `enable-llm-review` defaults
 | `prefetch-tree-sitter` | boolean | `false` | python-checks — parser cache/prefetch for tests and judge enrichment. |
 | `enable-lint`, `enable-test`, `enable-security` | boolean | `true` | python-checks — Python gate group. |
 | `enable-semgrep`, `enable-pip-audit` | boolean | `true` | python-checks — sub-toggles inside the security gate. |
+| `semgrep-config` | string | `"auto"` | python-checks — Semgrep configuration for the CI scan (`--config=<value>`); pass the value your local `semgrep` hook uses for CI/local parity (see [Semgrep ruleset fetch](#semgrep-ruleset-fetch)). |
 | `enable-diff-gate` | boolean | `true` | python-checks — 100% changed-line coverage (pull_request events only). |
 | `enable-js-lint`, `enable-js-test`, `enable-js-typecheck` | boolean | `true` | js-checks — the JS gate group (needs a `package-lock.json`). |
 | `enable-secret-scan` | boolean | `true` | both — toolkit secret scanner (language-agnostic). |
@@ -364,7 +366,7 @@ gates ON (the caller chose that entry point); `enable-llm-review` defaults
 |---|---|---|
 | `lint.yml` | `python-version` `"3.12"` · `lint-paths` `"."` · `extra-pip-packages` `"none"` | — |
 | `test.yml` | `python-version` `"3.12"` · `cov-paths` `"."` · `coverage-floor` (required) · `extra-pip-packages` `"none"` · `prefetch-tree-sitter` `false` | — |
-| `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `enable-semgrep` `true` · `enable-pip-audit` `true` · `toolkit-ref` `"v1.8.9"` | — |
+| `security.yml` | `python-version` `"3.12"` · `scan-paths` `"."` · `semgrep-config` `"auto"` · `enable-semgrep` `true` · `enable-pip-audit` `true` · `toolkit-ref` `"v1.8.9"` | — |
 | `secret-scan.yml` | `toolkit-ref` `"v1.8.9"` | — |
 | `diff-coverage.yml` | `toolkit-ref` `"v1.8.9"` · `coverage-artifact` `"coverage-json"` | — |
 | `llm-pr-review.yml` | `toolkit-ref` `"v1.8.9"` · `config-path` `"config/factory.json"` · `diff-exclude` `""` · `prefetch-tree-sitter` `false` · `batch-budget-chars` `""` | `openrouter-api-key` (required) · `judge-token` (optional) |
@@ -680,6 +682,22 @@ with `requires a different Python`. `mypy` is deliberately
 and an isolated environment would fail on every third-party import — the
 same reason the js-* hooks run `npm` from your environment.
 
+**Version parity with CI (D-0029).** The `semgrep` and `pip-audit` pins are
+the *same versions* `security.yml` installs (it reads them from its own
+version variables), so a green local hook run means the same engine as the
+CI gate. pre-commit requires literal pins and a workflow cannot import
+them, so the equality is enforced by the test suite
+(`tests/test_workflow_contracts.py`) rather than by a shared constant: if
+the two sites ever disagree, the toolkit's own build fails.
+
+**Bump procedure.** Update the `additional_dependencies` pin in
+`.pre-commit-hooks.yaml` and the matching version variable in
+`.github/workflows/security.yml` in **one commit**, and ship it in a
+release PR (D-0007) — the release tag carries both, and consumers pick both
+up by bumping `rev:` / `toolkit-ref:` together. A pin that moves on only one
+surface is the exact drift this contract exists to prevent: local green,
+CI red.
+
 ### Semgrep ruleset fetch
 
 The `semgrep` gate behaves identically on both surfaces: the hook and
@@ -687,13 +705,21 @@ The `semgrep` gate behaves identically on both surfaces: the hook and
 policy covers local commits and CI (D-0025). The wrapper is `semgrep scan`
 plus a bounded retry of the *configuration* load.
 
-- **The ruleset is a live registry artifact.** `--config=auto` (the
-  documented contract, and what `security.yml` passes) resolves its
-  ruleset on `semgrep.dev` at run time — pinning the ruleset *name*
-  (`p/default`, the current target of `/c/auto`) does not change that. A
-  registry config updates on Semgrep's schedule, so a previously-green
-  commit can gain findings with no code change: that is retroactive
-  coverage working as intended, not a flake.
+- **The engine is pinned, the ruleset is not — configure both sides
+  identically.** Because `security.yml` installs the same scanner versions
+  the hooks do (D-0029, see [Pre-commit hook](#pre-commit-hook)), the one
+  remaining difference between your local and CI scan is the `--config`
+  value: pass the same one to the hook's `args` and to the composite's
+  `semgrep-config` input. The toolkit cannot infer your local config, and a
+  mismatch is the false-confidence case this whole section is about — local
+  `p/security-audit` green while the CI scan's default `auto` flags the same
+  code.
+- **The ruleset is a live registry artifact.** `auto` (the default
+  `security.yml` passes) resolves its ruleset on `semgrep.dev` at run time —
+  pinning the ruleset *name* (`p/default`, the current target of `/c/auto`)
+  does not change that. A registry config updates on Semgrep's schedule, so
+  a previously-green commit can gain findings with no code change: that is
+  retroactive coverage working as intended, not a flake.
 - **A failed fetch is not a finding.** The fetch is unauthenticated and
   can be rate-limited (observed: `HTTP 403`). Semgrep then exits 7 — the
   same code it uses for a genuinely invalid ruleset — so the wrapper

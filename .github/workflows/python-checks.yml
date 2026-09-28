@@ -78,6 +78,14 @@ on:
         description: Run the pip-audit check inside security.yml.
         type: boolean
         default: true
+      semgrep-config:
+        description: >-
+          Semgrep configuration for the security scan (`--config=<value>`).
+          `auto` (the default) resolves the registry ruleset at run time;
+          pass the same value your local `semgrep` hook uses for CI/local
+          parity.
+        type: string
+        default: "auto"
       enable-diff-gate:
         description: Enforce 100% changed-line coverage on pull_request events.
         type: boolean
@@ -153,6 +161,7 @@ jobs:
     with:
       python-version: ${{ inputs.python-version }}
       scan-paths: ${{ inputs.lint-paths }}
+      semgrep-config: ${{ inputs.semgrep-config }}
       enable-semgrep: ${{ inputs.enable-semgrep }}
       enable-pip-audit: ${{ inputs.enable-pip-audit }}
       toolkit-ref: ${{ inputs.toolkit-ref }}

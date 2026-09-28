@@ -36,7 +36,16 @@ The toolkit ships exactly what a consumer's CI needs to run the gates:
 - `diff_coverage_gate.py`, `secret_scan.py` are the deterministic gates.
   `semgrep_scan.py` wraps the external Semgrep scanner with the bounded
   ruleset-fetch retry that the pre-commit hook and `security.yml` both run
-  (D-0025).
+  (D-0025). Both surfaces install the SAME pinned scanner versions — the
+  equality is asserted by the contract suite, since pre-commit needs literal
+  pins and a workflow cannot import them (D-0029) — and the ruleset is a
+  consumer input (`semgrep-config`, default `auto`) rather than hardcoded
+  YAML, so a CI scan can be configured to match the local hook exactly.
+  Consumer-supplied values reach that step's shell through the environment,
+  never inlined into the generated script, so a caller cannot turn an input
+  into command execution. The
+  ruleset itself stays live: pinning the engine does not pin the registry
+  config, and re-scanning old code with new rules is the intended behaviour.
 - `judge_config.py` resolves per-judge model/routing configuration, validating
   the two consumer-supplied knobs at that boundary: the completion cap always
   resolves to a positive integer (D-0021) and `fallback_model` always resolves
