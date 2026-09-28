@@ -898,7 +898,7 @@ def test_security_gate_runs_the_semgrep_wrapper_from_the_toolkit_checkout():
     implementation of the same retry."""
     semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
     assert "../toolkit/scripts/semgrep_scan.py" in semgrep_step
-    assert "--config=${{ inputs.semgrep-config || 'auto' }} --error" in semgrep_step
+    assert '--config="${SEMGREP_CONFIG:-auto}" --error' in semgrep_step
     assert "semgrep scan" not in semgrep_step, (
         "the raw semgrep invocation bypasses the retry policy"
     )
@@ -933,15 +933,17 @@ def test_security_gate_pins_the_scanners_to_the_hook_versions():
 
 def test_security_gate_installs_the_pinned_scanner_versions():
     """A pinned env var nobody reads pins nothing: the install steps must
-    consume it (the `lint.yml` RUFF_VERSION pattern). Installing the bare
-    package name — the pre-D-0029 shape — resolves whatever the index holds
-    that day, so local and CI silently diverge."""
+    consume the job's version variables. Installing the bare package name —
+    the pre-D-0029 shape — resolves whatever the index holds that day, so
+    local and CI silently diverge."""
+    env = _jobs(_load("security.yml"))["security"]["env"]
     semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
     pip_audit_step = next(
         run for run in _run_steps("security.yml") if "pip-audit" in run
     )
-    assert 'pip install -q "semgrep==${{ env.SEMGREP_VERSION }}"' in semgrep_step
-    assert 'pip install -q "pip-audit==${{ env.PIP_AUDIT_VERSION }}"' in pip_audit_step
+    assert 'pip install -q "semgrep==${SEMGREP_VERSION}"' in semgrep_step
+    assert 'pip install -q "pip-audit==${PIP_AUDIT_VERSION}"' in pip_audit_step
+    assert {"SEMGREP_VERSION", "PIP_AUDIT_VERSION"} <= set(env)
 
 
 def test_security_gate_exposes_the_semgrep_config_input():
@@ -950,8 +952,25 @@ def test_security_gate_exposes_the_semgrep_config_input():
     hardcoded YAML."""
     inputs = _call_inputs(_load("security.yml"))
     assert inputs["semgrep-config"]["default"] == "auto"
-    semgrep_step = next(run for run in _run_steps("security.yml") if "semgrep" in run)
-    assert "--config=${{ inputs.semgrep-config || 'auto' }} --error" in semgrep_step
+
+
+def test_security_gate_routes_consumer_inputs_through_the_environment():
+    """Hardening the security judge asked for: a consumer-supplied value must
+    never be interpolated into the `run:` script. `${{ inputs.x }}` inlined
+    there is a template-injection surface — a caller mapping untrusted
+    context into the input can break out of the argument and execute shell
+    on the runner. The values reach the shell as env vars instead, with the
+    single-valued config expanded quoted and the space-separated paths list
+    expanded unquoted (word splitting is the contract; parameter expansion
+    is not re-scanned for shell operators)."""
+    job = _jobs(_load("security.yml"))["security"]
+    step = next(s for s in job["steps"] if "semgrep" in s["name"].lower())
+    assert step["env"]["SEMGREP_CONFIG"] == "${{ inputs.semgrep-config }}"
+    assert step["env"]["SCAN_PATHS"] == "${{ inputs.scan-paths }}"
+    assert "${{ inputs." not in step["run"], (
+        "no consumer input may be inlined into a run: script"
+    )
+    assert '$SCAN_PATHS --config="${SEMGREP_CONFIG:-auto}"' in step["run"]
 
 
 def test_composites_forward_the_semgrep_config_to_the_security_gate():

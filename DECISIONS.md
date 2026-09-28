@@ -1726,12 +1726,24 @@ The `security.yml` gate and the `semgrep` / `pip-audit` pre-commit hooks run
    variables; a one-sided bump fails the toolkit's own build. The bump
    procedure (both sites in one commit, shipped in a release PR) is documented
    in the README.
-3. **`semgrep-config` is an input, default `auto`.** `security.yml` passes
-   `--config=${{ inputs.semgrep-config || 'auto' }}`, and both composites
+3. **`semgrep-config` is an input, default `auto`.** `security.yml` passes it
+   to the scan as `--config="${SEMGREP_CONFIG:-auto}"`, and both composites
    forward the input to that job. A consumer that runs the hook with a custom
    config (e.g. `p/security-audit`) can now give CI the same value, which is
-   the half of the drift an engine pin alone cannot close.
-4. **The ruleset stays live.** Pinning the *engine* does not pin the
+   the half of the drift an engine pin alone cannot close. The shell default
+   keeps the documented behaviour for an empty value.
+4. **Consumer inputs reach the shell through the environment, never inlined
+   into `run:`.** `${{ inputs.* }}` is substituted into the script text
+   *before* the shell parses it, so a caller that maps untrusted context into
+   an input could break out of the argument and run shell on the runner. Both
+   step inputs are step `env:` variables instead: the single-valued config is
+   expanded quoted (`--config="${SEMGREP_CONFIG:-auto}"`) and the
+   space-separated paths list is expanded **unquoted** — word splitting is its
+   documented contract (one `--config` per path is not), and shell parameter
+   expansion is not re-scanned for shell operators, so the injection vector
+   closes without changing the list semantics. A contract test asserts no
+   consumer input is inlined into that step's `run:`.
+5. **The ruleset stays live.** Pinning the *engine* does not pin the
    *ruleset*: a registry config re-resolves on Semgrep's schedule, so old code
    can gain findings with no repo change. That is retroactive coverage
    working, not a flake — the same position D-0025 took — and the remedy is
@@ -1759,6 +1771,21 @@ unsatisfiable for composite callers, who are the documented default entry
 point (D-0020). Making it an input with the current value as the default is
 additive: no existing caller changes behaviour.
 
+That new input is also *consumer-supplied text*, which is why it cannot be
+interpolated into the `run:` script: the expression is substituted into the
+script text before the shell ever parses it, so a caller that maps untrusted
+context (a PR title, a branch name) into the input gains command execution on
+the runner. GitHub's own guidance for inline scripts is to route the value
+through an intermediate environment variable, which is what this does —
+including the pre-existing `scan-paths` in the same step, since leaving a
+known vector of the same class in the line under change is indefensible.
+The quoting differs deliberately by value shape: single values are expanded
+quoted, the space-separated path list is not, because its contract *is* word
+splitting and (per the same guidance and SC2086) that is a shell-semantics
+choice, not the injection question. Closing the injection vector without
+changing the list contract is possible only because shell parameter expansion
+results are never re-scanned for shell operators.
+
 Keeping the ruleset live (rather than vendoring it) follows from what the gate
 is for — finding real problems. A frozen ruleset stops receiving new
 detection rules; D-0025's retry already treats a *fetch* failure as an
@@ -1777,6 +1804,10 @@ why a registry update that flags old code is the intended behaviour.
 - Composite callers gain a `semgrep-config` input; micro-workflow callers
   gain it directly on `security.yml`. `auto` stays the default on all three,
   so no existing pipeline changes behaviour.
+- The Semgrep step passes both of its consumer inputs (and the pinned
+  versions) through `env:`; a consumer-supplied string is no longer part of
+  the generated script, so an untrusted value cannot escape the argument.
+  `scan-paths` keeps its space-separated semantics via an unquoted expansion.
 - `pip-audit` gains the same pin guarantee. Its hook is consumer-arg-driven
   (`args: ["-r", "requirements.txt"]`), so only the engine version is shared,
   not the audited target — documented, not enforced.
@@ -1801,4 +1832,11 @@ why a registry update that flags old code is the intended behaviour.
   section's reasoning ("retroactive coverage, not a flake") bounds this entry.
 - `lint.yml` — the in-repo `RUFF_VERSION` / `MYPY_VERSION` env-variable pattern
   that `security.yml` now mirrors.
+- [GitHub Docs — Secure use reference, "Good practices for mitigating script
+  injection attacks"](https://docs.github.com/en/actions/reference/security/secure-use#good-practices-for-mitigating-script-injection-attacks)
+  — the intermediate-environment-variable mitigation this entry applies, and
+  the note that double-quoting shell variables is a general shell
+  recommendation (word splitting), not part of the injection fix.
+- [ShellCheck SC2086](https://github.com/koalaman/shellcheck/wiki/SC2086) —
+  the word-splitting pitfall the `scan-paths` expansion deliberately accepts.
 

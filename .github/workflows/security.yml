@@ -85,13 +85,23 @@ jobs:
       - name: Run Semgrep security scan
         if: inputs.enable-semgrep
         working-directory: repo
+        env:
+          # Consumer-supplied values reach the shell ONLY through the
+          # environment: `${{ inputs.x }}` inlined into `run:` is a template
+          # injection surface (a caller may map untrusted context into an
+          # input and break out of the argument). SCAN_PATHS stays unquoted
+          # on purpose — it is a space-separated list whose words must split
+          # (parameter expansion is not re-scanned for shell operators);
+          # SEMGREP_CONFIG is a single value and is expanded quoted.
+          SCAN_PATHS: ${{ inputs.scan-paths }}
+          SEMGREP_CONFIG: ${{ inputs.semgrep-config }}
         run: |
-          pip install -q "semgrep==${{ env.SEMGREP_VERSION }}"
-          python3 ../toolkit/scripts/semgrep_scan.py ${{ inputs.scan-paths }} --config=${{ inputs.semgrep-config || 'auto' }} --error
+          pip install -q "semgrep==${SEMGREP_VERSION}"
+          python3 ../toolkit/scripts/semgrep_scan.py $SCAN_PATHS --config="${SEMGREP_CONFIG:-auto}" --error
 
       - name: Run pip-audit dependency check
         if: inputs.enable-pip-audit
         working-directory: repo
         run: |
-          pip install -q "pip-audit==${{ env.PIP_AUDIT_VERSION }}"
+          pip install -q "pip-audit==${PIP_AUDIT_VERSION}"
           pip-audit .
