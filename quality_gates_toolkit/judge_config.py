@@ -75,11 +75,17 @@ def _warn(message: str) -> None:
 def _resolve_max_tokens(value: Any, node_name: str) -> int:
     """The effective completion-token cap for ``node_name``.
 
-    A configured ``max_tokens`` is used as-is when it is a positive integer;
-    anything else (absent, ``null``, ``0``, negative, float, string, or a
-    bool — ``True`` is an ``int`` in Python but never a token bound) warns and
-    falls back to ``DEFAULT_MAX_TOKENS`` so a malformed config value can
-    never remove the bound.
+    A configured ``max_tokens`` is used as-is when it is a positive integer.
+    A malformed value (``0``, negative, float, string, or a bool — ``True``
+    is an ``int`` in Python but never a token bound) warns and falls back to
+    ``DEFAULT_MAX_TOKENS``, so a malformed config value can never remove the
+    bound.
+
+    An absent key and an explicit JSON ``null`` are indistinguishable through
+    ``dict.get`` and mean the same thing — no configured cap — so both
+    resolve to ``DEFAULT_MAX_TOKENS`` *without* a warning: "not configured"
+    is not a malformation. D-0028 draws the same boundary for
+    ``fallback_model``.
     """
     if value is None:
         return DEFAULT_MAX_TOKENS
